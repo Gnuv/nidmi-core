@@ -66,6 +66,7 @@ Role: encapsuler les details bas niveau de chaque backend.
 
 - detection de capacites cible (ex: USB natif ESP32-S3)
 - wrappers HAL (si necessaire) pour limiter la dependance directe aux specifics carte
+- **OTA firmware** : `OtaUpdate` — ecriture via `Update` (ESP32), sans HTTP ; voir `docs/OTA.md`
 
 Role: isoler les variations hardware et simplifier la portabilite.
 

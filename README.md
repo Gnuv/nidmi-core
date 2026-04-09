@@ -36,6 +36,7 @@ Objectif: factoriser l'infrastructure MIDI et reseau deja stable, afin que plusi
   - configuration runtime des transports
   - boucle `update()` non bloquante
   - hooks/callbacks de reception MIDI (optionnels ; `RtpMidiService` utilise des callbacks statiques vers une instance active pour la MIDI Library)
+- **OTA** (ESP32) : `nidmi_platform::OtaUpdate` — ecriture du firmware via `Update` (sans route HTTP ; l’app branche ses handlers). Voir `docs/OTA.md`.
 
 ## Ce que `nidmi-core` ne contient pas
 
@@ -51,6 +52,7 @@ Objectif: factoriser l'infrastructure MIDI et reseau deja stable, afin que plusi
 - MIDI UART (RX/TX): `docs/UART_MIDI.md`
 - Lecteur de sons + sync multi-ESP: `docs/USE_CASE_AUDIO_SYNC.md`
 - OSC + PlatformIO (ESP32-S3): `docs/OSC_PLATFORMIO.md`
+- OTA firmware: `docs/OTA.md`
 - Contrat API: `docs/API.md`
 - Migration depuis `NiDMI`: `docs/MIGRATION_FROM_NIDMI.md`
 - Versioning et releases: `docs/RELEASES.md`
