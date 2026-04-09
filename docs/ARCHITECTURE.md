@@ -66,8 +66,9 @@ Role: encapsuler les details bas niveau de chaque backend.
 
 - detection de capacites cible (ex: USB natif ESP32-S3)
 - wrappers HAL (si necessaire) pour limiter la dependance directe aux specifics carte
+- **USB CDC** (`nidmi_platform`, ESP32-S3) : `Esp32UsbCdc` — init unique du port série USB (TinyUSB), sans MIDI ; contrat documenté dans `docs/USB_CDC.md`
 
-Role: isoler les variations hardware et simplifier la portabilite.
+Role: isoler les variations hardware et simplifier la portabilite. Le CDC (console / debug sur câble USB) est volontairement séparé des transports **MIDI** (RTP, BLE, USB-MIDI, UART).
 
 ## Regles de responsabilite
 

@@ -36,6 +36,7 @@ Objectif: factoriser l'infrastructure MIDI et reseau deja stable, afin que plusi
   - configuration runtime des transports
   - boucle `update()` non bloquante
   - hooks/callbacks de reception MIDI (optionnels ; `RtpMidiService` utilise des callbacks statiques vers une instance active pour la MIDI Library)
+- **Plateforme ESP32-S3** : `nidmi_platform::Esp32UsbCdc` — init du **CDC** (port serie USB TinyUSB), separe du MIDI USB ; voir `docs/USB_CDC.md`.
 
 ## Ce que `nidmi-core` ne contient pas
 
@@ -48,6 +49,7 @@ Objectif: factoriser l'infrastructure MIDI et reseau deja stable, afin que plusi
 
 - Demarrage rapide: `docs/QUICKSTART.md`
 - Architecture: `docs/ARCHITECTURE.md`
+- USB CDC (ESP32-S3): `docs/USB_CDC.md`
 - MIDI UART (RX/TX): `docs/UART_MIDI.md`
 - Lecteur de sons + sync multi-ESP: `docs/USE_CASE_AUDIO_SYNC.md`
 - OSC + PlatformIO (ESP32-S3): `docs/OSC_PLATFORMIO.md`
