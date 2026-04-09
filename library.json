@@ -1,0 +1,20 @@
+{
+  "name": "nidmi-core",
+  "version": "0.0.1",
+  "description": "Shared MIDI transport layer for NiDMI ecosystem",
+  "keywords": ["esp32", "midi", "rtp-midi"],
+  "authors": {
+    "name": "Patrice Colet",
+    "maintainer": true
+  },
+  "frameworks": "arduino",
+  "platforms": ["espressif32"],
+  "dependencies": [
+    { "name": "AppleMIDI" },
+    { "name": "MIDI Library", "version": ">=5.0.0" },
+    { "name": "OSC", "authors": "cnmat" }
+  ],
+  "build": {
+    "libArchive": false
+  }
+}

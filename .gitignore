@@ -1,0 +1,16 @@
+# PlatformIO
+.pio/
+.pioenvs/
+
+# Builds locaux
+build/
+cmake-build-*/
+
+# OS / éditeurs
+.DS_Store
+*.swp
+*~
+
+# IDE (optionnel : retirer la ligne si vous versionnez les réglages partagés)
+.vscode/
+.idea/
