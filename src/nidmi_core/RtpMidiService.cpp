@@ -91,9 +91,11 @@ bool RtpMidiService::begin(const char* sessionName, uint16_t port) {
 
   AppleNdmMidi.setHandleConnected([](const APPLEMIDI_NAMESPACE::ssrc_t&, const char* name) {
     Serial.printf("[RTP-MIDI] connecte: %s\n", name ? name : "?");
+    if (callbackTarget_) callbackTarget_->connected_ = true;
   });
   AppleNdmMidi.setHandleDisconnected([](const APPLEMIDI_NAMESPACE::ssrc_t&) {
     Serial.println("[RTP-MIDI] deconnecte");
+    if (callbackTarget_) callbackTarget_->connected_ = false;
   });
 
   installMidiInputHandlers_();

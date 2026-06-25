@@ -37,11 +37,13 @@ public:
   void sendContinue();
 
   bool isReady() const { return started_; }
+  bool isConnected() const { return connected_; }
   uint16_t port() const { return port_; }
 
 private:
-  bool started_ = false;
-  uint16_t port_ = 5004;
+  bool started_   = false;
+  bool connected_ = false;
+  uint16_t port_  = 5004;
 
   MidiThreeByteFn hookNoteOn_;
   MidiThreeByteFn hookNoteOff_;
