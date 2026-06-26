@@ -1,7 +1,7 @@
 #include "MidiOscRouter.h"
 #include <OSCMessage.h>
 
-namespace nidmi {
+namespace nidmi_core {
 
 MidiOscRouter::MidiOscRouter(RtpMidiService& rtp, OscUdpService& osc) : rtp_(rtp), osc_(osc) {
   prefix_ = "/nidmi";
@@ -68,4 +68,4 @@ void MidiOscRouter::unwire() {
   wired_ = false;
 }
 
-}  // namespace nidmi
+}  // namespace nidmi_core

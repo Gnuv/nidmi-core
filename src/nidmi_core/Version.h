@@ -1,7 +1,7 @@
 #pragma once
 
-namespace nidmi {
+namespace nidmi_core {
 
 const char* version();
 
-}  // namespace nidmi
+}  // namespace nidmi_core

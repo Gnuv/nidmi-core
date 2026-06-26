@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-namespace nidmi {
+namespace nidmi_core {
 
 /**
  * Point d'acces WiFi + mDNS (hostname .local).
@@ -10,4 +10,4 @@ namespace nidmi {
  */
 bool netBeginSoftAp(const char* apSsid, const char* apPass, const char* mdnsHostname);
 
-}  // namespace nidmi
+}  // namespace nidmi_core

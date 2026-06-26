@@ -2,7 +2,7 @@
 #include <ESPmDNS.h>
 #include <WiFi.h>
 
-namespace nidmi {
+namespace nidmi_core {
 
 bool netBeginSoftAp(const char* apSsid, const char* apPass, const char* mdnsHostname) {
   if (!apSsid || !apPass || !mdnsHostname) {
@@ -25,4 +25,4 @@ bool netBeginSoftAp(const char* apSsid, const char* apPass, const char* mdnsHost
   return true;
 }
 
-}  // namespace nidmi
+}  // namespace nidmi_core

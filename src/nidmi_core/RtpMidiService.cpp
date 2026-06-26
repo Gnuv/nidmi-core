@@ -10,7 +10,7 @@ USING_NAMESPACE_APPLEMIDI
 // Port 5004 par defaut (modifiable uniquement en changeant la macro si besoin d un autre port).
 APPLEMIDI_CREATE_INSTANCE(WiFiUDP, NdmMidi, "nidmi-core", 5004);
 
-namespace nidmi {
+namespace nidmi_core {
 
 RtpMidiService* RtpMidiService::callbackTarget_ = nullptr;
 
@@ -203,4 +203,4 @@ void RtpMidiService::sendContinue() {
   NdmMidi.sendContinue();
 }
 
-}  // namespace nidmi
+}  // namespace nidmi_core

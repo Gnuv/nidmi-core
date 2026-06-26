@@ -1,9 +1,9 @@
 #include "Version.h"
 
-namespace nidmi {
+namespace nidmi_core {
 
 const char* version() {
   return "0.3.0";
 }
 
-}  // namespace nidmi
+}  // namespace nidmi_core

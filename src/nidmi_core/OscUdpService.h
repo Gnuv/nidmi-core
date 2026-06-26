@@ -5,7 +5,7 @@
 #include <WiFiUdp.h>
 #include <functional>
 
-namespace nidmi {
+namespace nidmi_core {
 
 /** Meme semantique que l OSCManager NiDMI pour le broadcast / interface. */
 enum class OscNetInterface : uint8_t {
@@ -60,4 +60,4 @@ private:
   ReceiveCallback onReceive_;
 };
 
-}  // namespace nidmi
+}  // namespace nidmi_core

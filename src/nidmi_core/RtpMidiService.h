@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <functional>
 
-namespace nidmi {
+namespace nidmi_core {
 
 /**
  * RTP-MIDI (AppleMIDI) : emission et reception via WiFi.
@@ -61,4 +61,4 @@ private:
   static RtpMidiService* callbackTarget_;
 };
 
-}  // namespace nidmi
+}  // namespace nidmi_core

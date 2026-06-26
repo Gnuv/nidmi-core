@@ -7,7 +7,7 @@
 #include <esp_arduino_version.h>
 #endif
 
-namespace nidmi {
+namespace nidmi_core {
 namespace platform {
 
 namespace {
@@ -92,7 +92,7 @@ bool OtaUpdate::write(const uint8_t* data, size_t len) {
   }
 
 #if NIDMI_PLATFORM_OTA_ESP32
-  const size_t w = Update.write(data, len);
+  const size_t w = Update.write(const_cast<uint8_t*>(data), len);
   if (w != len) {
     setErrorFromUpdate();
     abort();
@@ -151,4 +151,4 @@ void OtaUpdate::setErrorFromUpdate() {
 }
 
 }  // namespace platform
-}  // namespace nidmi
+}  // namespace nidmi_core

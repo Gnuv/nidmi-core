@@ -4,7 +4,7 @@
 #include "RtpMidiService.h"
 #include <Arduino.h>
 
-namespace nidmi {
+namespace nidmi_core {
 
 /**
  * Pont RTP-MIDI <-> OSC UDP : conventions d adresses (prefixe par defaut "/nidmi") :
@@ -31,4 +31,4 @@ private:
   bool wired_ = false;
 };
 
-}  // namespace nidmi
+}  // namespace nidmi_core

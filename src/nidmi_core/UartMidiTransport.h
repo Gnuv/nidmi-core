@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace nidmi {
+namespace nidmi_core {
 
 struct UartMidiConfig {
   bool enable = false;
@@ -41,4 +41,4 @@ public:
   virtual void sendContinue() = 0;
 };
 
-}  // namespace nidmi
+}  // namespace nidmi_core
