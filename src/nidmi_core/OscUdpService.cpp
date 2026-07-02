@@ -71,7 +71,7 @@ bool OscUdpService::sendInt(const char* address, int value) {
     return false;
   }
   OSCMessage msg(address);
-  msg.add((intOSC_t)value);
+  msg.add((int32_t)value);
   return sendOSCMessage(msg);
 }
 
@@ -80,8 +80,8 @@ bool OscUdpService::sendNote(const char* address, uint8_t note, uint8_t velocity
     return false;
   }
   OSCMessage msg(address);
-  msg.add((intOSC_t)note);
-  msg.add((intOSC_t)velocity);
+  msg.add((int32_t)note);
+  msg.add((int32_t)velocity);
   return sendOSCMessage(msg);
 }
 
@@ -90,9 +90,9 @@ bool OscUdpService::sendMidiTriplet(const char* address, int data1, int data2, i
     return false;
   }
   OSCMessage msg(address);
-  msg.add((intOSC_t)data1);
-  msg.add((intOSC_t)data2);
-  msg.add((intOSC_t)channel);
+  msg.add((int32_t)data1);
+  msg.add((int32_t)data2);
+  msg.add((int32_t)channel);
   return sendOSCMessage(msg);
 }
 

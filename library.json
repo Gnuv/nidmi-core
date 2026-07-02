@@ -12,7 +12,8 @@
   "dependencies": [
     { "name": "AppleMIDI" },
     { "name": "MIDI Library", "version": ">=5.0.0" },
-    { "name": "OSC", "authors": "cnmat" }
+    { "name": "OSC", "authors": "cnmat" },
+    { "name": "Update", "platforms": ["espressif32"] }
   ],
   "build": {
     "libArchive": false
