@@ -90,37 +90,23 @@ extern "C" uint16_t nidmi_usbnet_load_descriptor(uint8_t* dst, uint8_t* itf) {
   uint8_t strIndex = tinyusb_add_string_descriptor(s_ifName);
   uint8_t macIndex = tinyusb_add_string_descriptor(s_hostMacStr);
 
-  // L'ORDRE COMPTE. On alloue d'abord la paire de donnees en duplex, la
-  // notification ensuite.
+  // L'ORDRE COMPTE, et c'est celui-ci qui est valide sur macOS : notification
+  // d'abord, paire de donnees en duplex ensuite. On obtient
+  //   MIDI IN1/OUT1, NCM notif 0x82, NCM data 0x83/0x03
   //
-  // Mesure : avec la notification en premier, elle prend IN2, et le duplex ne
-  // trouve plus d'index libre des deux cotes des que CDC est actif (il reserve
-  // OUT3/IN4/IN5). On retombe alors sur des bulk desapparies (IN3/OUT2), et
-  // macOS refuse d'activer l'alternate setting 1 : interface presente,
-  // `status: inactive`, zero trame, alors que le peripherique annonce
-  // pourtant son lien.
-  //
-  // En prenant le duplex d'abord, l'index 2 est libre des deux cotes dans les
-  // deux configurations :
-  //   sans CDC : MIDI IN1/OUT1, NCM data IN2/OUT2, NCM notif IN3
-  //   avec CDC : idem + CDC OUT3/IN4/IN5, soit 5 IN dont 4 FIFO reels
-  uint8_t epData = tinyusb_get_free_duplex_endpoint();
-  uint8_t epIn = epData;
-  uint8_t epOut = epData;
-  if (epData == 0) {
-    // Repli si un jour la configuration ne laisse plus d'index duplex libre.
-    // Non valide cote hote : voir la mesure ci-dessus.
-    epIn = tinyusb_get_free_in_endpoint();
-    epOut = tinyusb_get_free_out_endpoint();
-  }
-  TU_VERIFY(epIn != 0 && epOut != 0);
-
+  // Ne pas « optimiser » cet ordre. L'avoir inverse pour tenter de laisser de
+  // la place a un CDC produit notif 0x83 / data 0x82-0x02, et dans cette
+  // disposition macOS lie bien AppleUSBNCMData et cree l'interface, mais
+  // n'active jamais l'alternate setting 1 : `status: inactive`, aucun bail,
+  // zero trame. Le CDC ne rentre de toute facon pas (voir docs/USB_NET.md).
   uint8_t epNotif = tinyusb_get_free_in_endpoint();
   TU_VERIFY(epNotif != 0);
+  uint8_t epData = tinyusb_get_free_duplex_endpoint();
+  TU_VERIFY(epData != 0);
 
   uint8_t descriptor[TUD_CDC_NCM_DESC_LEN] = {
-    TUD_CDC_NCM_DESCRIPTOR(*itf, strIndex, macIndex, (uint8_t)(0x80 | epNotif), 64, epOut,
-                           (uint8_t)(0x80 | epIn), CFG_TUD_ENDOINT_SIZE, CFG_TUD_NET_MTU)
+    TUD_CDC_NCM_DESCRIPTOR(*itf, strIndex, macIndex, (uint8_t)(0x80 | epNotif), 64, epData,
+                           (uint8_t)(0x80 | epData), CFG_TUD_ENDOINT_SIZE, CFG_TUD_NET_MTU)
   };
   *itf += 2;  // interface de controle + interface de donnees
   memcpy(dst, descriptor, TUD_CDC_NCM_DESC_LEN);

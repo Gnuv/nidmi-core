@@ -87,13 +87,17 @@ sous-reseau est fixe, celui du lien USB est configurable.
 FIFO IN reellement utilisables. La configuration validee est :
 
 ```
-MIDI IN1/OUT1     NCM data IN2/OUT2 (duplex)     NCM notif IN3
+MIDI IN1/OUT1     NCM notif 0x82     NCM data 0x83/0x03 (duplex)
 ```
 
-L'ordre d'allocation compte : le service prend la **paire de donnees en duplex
-d'abord**, la notification ensuite. Dans l'autre sens la notification occupe
-l'index 2 et les bulk finissent desapparies, ce que macOS refuse — l'interface
-apparait mais reste `inactive`, alternate setting 0, zero trame.
+**L'ordre d'allocation compte, et il ne faut pas y toucher** : notification
+d'abord, paire de donnees en duplex ensuite. Inverser cet ordre — ce qui semble
+anodin, et permettrait en theorie de liberer un index pour un CDC — donne
+notif `0x83` et data `0x82`/`0x02`. Dans cette disposition macOS lie pourtant
+`AppleUSBNCMControl` et `AppleUSBNCMData`, cree bien l'interface reseau, mais
+n'active **jamais** l'alternate setting 1 : `status: inactive`, `bNumEndpoints
+= 0` sur l'interface de donnees, aucun bail, zero trame. Aucun message
+d'erreur nulle part.
 
 **Ajouter un CDC-ACM au composite ne fonctionne pas.** La comptabilite du core
 l'autorise (`tinyusb_has_available_fifos()` tolere 5 endpoints IN quand CDC est
