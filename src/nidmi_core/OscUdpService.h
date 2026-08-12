@@ -11,7 +11,9 @@ namespace nidmi_core {
 enum class OscNetInterface : uint8_t {
   AP = 0,
   STA = 1,
-  BOTH = 2
+  BOTH = 2,
+  /** Lien USB (CDC-NCM) — voir UsbNetService et docs/USB_NET.md. */
+  USB = 3
 };
 
 /**
@@ -34,6 +36,12 @@ public:
   void setTarget(const char* targetIp, uint16_t targetPort);
   void setBroadcast(bool enable);
   void setInterface(OscNetInterface iface);
+  /**
+   * Adresse de diffusion du lien USB, utilisee quand l'interface vaut USB.
+   * Typiquement UsbNetService::broadcastAddress(). Le sous-reseau USB n'est
+   * pas devinable ici : contrairement a l'AP WiFi, il est configurable.
+   */
+  void setUsbBroadcastAddress(const char* address);
 
   void setReceiveCallback(ReceiveCallback cb);
 
@@ -57,6 +65,7 @@ private:
   bool enabled_ = true;
   bool broadcastEnabled_ = false;
   OscNetInterface netIf_ = OscNetInterface::AP;
+  String usbBroadcast_ = "192.168.7.255";  // defaut aligne sur UsbNetConfig::ip
   ReceiveCallback onReceive_;
 };
 

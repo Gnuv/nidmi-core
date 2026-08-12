@@ -1,6 +1,6 @@
 {
   "name": "nidmi-core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Shared MIDI transport layer for NiDMI ecosystem",
   "keywords": ["esp32", "midi", "rtp-midi"],
   "authors": {

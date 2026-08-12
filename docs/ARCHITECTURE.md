@@ -65,6 +65,9 @@ Role: encapsuler les details bas niveau de chaque backend.
 ### 4) Couche Platform
 
 - detection de capacites cible (ex: USB natif ESP32-S3)
+- **interface reseau USB** : `UsbNetService` (CDC-NCM) — expose un second netif
+  porte par le cable, exclu a la compilation hors ESP32-S3 par
+  `SOC_USB_OTG_SUPPORTED`. Voir `docs/USB_NET.md`
 - wrappers HAL (si necessaire) pour limiter la dependance directe aux specifics carte
 - **OTA firmware** : `OtaUpdate` — ecriture via `Update` (ESP32), sans HTTP ; voir `docs/OTA.md`
 

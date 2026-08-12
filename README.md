@@ -36,6 +36,7 @@ Objectif: factoriser l'infrastructure MIDI et reseau deja stable, afin que plusi
   - configuration runtime des transports
   - boucle `update()` non bloquante
   - hooks/callbacks de reception MIDI (optionnels ; `RtpMidiService` utilise des callbacks statiques vers une instance active pour la MIDI Library)
+- **Interface reseau sur cable USB** (ESP32-S3) : `UsbNetService` — CDC-NCM en parallele de l'USB-MIDI, sur le meme connecteur. Le serveur HTTP, OSC, RTP-MIDI et mDNS passent par le cable, WiFi eteint. Voir `docs/USB_NET.md`.
 - **OTA** (ESP32) : `nidmi_platform::OtaUpdate` — ecriture du firmware via `Update` (sans route HTTP ; l’app branche ses handlers). Voir `docs/OTA.md`.
 
 ## Ce que `nidmi-core` ne contient pas
@@ -50,6 +51,7 @@ Objectif: factoriser l'infrastructure MIDI et reseau deja stable, afin que plusi
 - Demarrage rapide: `docs/QUICKSTART.md`
 - Architecture: `docs/ARCHITECTURE.md`
 - MIDI UART (RX/TX): `docs/UART_MIDI.md`
+- Interface reseau USB (CDC-NCM): `docs/USB_NET.md`
 - Lecteur de sons + sync multi-ESP: `docs/USE_CASE_AUDIO_SYNC.md`
 - OSC + PlatformIO (ESP32-S3): `docs/OSC_PLATFORMIO.md`
 - OTA firmware: `docs/OTA.md`
@@ -72,6 +74,7 @@ nidmi-core/
     RtpMidiService.h
     RtpMidiService.cpp
     OscUdpService.h / .cpp
+    UsbNetService.h / .cpp
     MidiOscRouter.h / .cpp
     UartMidiTransport.h
   docs/

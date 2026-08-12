@@ -49,6 +49,12 @@ void OscUdpService::setBroadcast(bool enable) {
   broadcastEnabled_ = enable;
 }
 
+void OscUdpService::setUsbBroadcastAddress(const char* address) {
+  if (address && *address) {
+    usbBroadcast_ = address;
+  }
+}
+
 void OscUdpService::setInterface(OscNetInterface iface) {
   netIf_ = iface;
 }
@@ -120,6 +126,20 @@ bool OscUdpService::sendOSCMessage(OSCMessage& msg) {
       int retry = 0;
       while (retry <= maxRetries && !success) {
         if (udp_.beginPacket("192.168.4.255", targetPort_)) {
+          msg.send(udp_);
+          if (udp_.endPacket()) {
+            success = true;
+          }
+        }
+        ++retry;
+      }
+    }
+    // Lien USB : l'adresse vient de setUsbBroadcastAddress(), le sous-reseau
+    // n'etant pas fixe comme celui de l'AP.
+    if (netIf_ == OscNetInterface::USB && usbBroadcast_.length() > 0) {
+      int retry = 0;
+      while (retry <= maxRetries && !success) {
+        if (udp_.beginPacket(usbBroadcast_.c_str(), targetPort_)) {
           msg.send(udp_);
           if (udp_.endPacket()) {
             success = true;

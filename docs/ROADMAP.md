@@ -14,6 +14,7 @@ Resultat attendu: `nidmi-core` compilable, API minimale documentee.
 - [ ] integrer BLE MIDI de maniere modulaire
 - [ ] integrer USB MIDI avec detection des cibles supportees
 - [ ] **integrer UART MIDI (31250 baud, RX/TX)** — `UartMidiTransport`, voir `docs/UART_MIDI.md`
+- [x] **interface reseau USB (CDC-NCM)** — `UsbNetService`, valide sur macOS ; Linux et Windows a faire
 - [ ] uniformiser erreurs/retours d'etat (`CoreStatus`)
 - [ ] ajouter exemple "send test notes"
 

@@ -5,3 +5,4 @@
 #include "nidmi_core/RtpMidiService.h"
 #include "nidmi_core/OscUdpService.h"
 #include "nidmi_core/MidiOscRouter.h"
+#include "nidmi_core/UsbNetService.h"
