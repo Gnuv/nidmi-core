@@ -40,8 +40,12 @@ void setup() {
   USB.usbProtocol(MISC_PROTOCOL_IAD);
   USB.begin();
 
-  MDNS.begin("nidmi");                   // avant begin() si manageMdns
   usbNet.begin();                        // APRES USB.begin()
+
+  // mDNS APRES usbNet.begin() : mdns_init() a besoin d'esp_netif_init() et de
+  // la boucle d'evenements par defaut, mis en place par begin(). Dans l'autre
+  // ordre l'init echoue et le .local ne resout jamais.
+  MDNS.begin("nidmi");
 }
 
 void loop() {
@@ -79,16 +83,27 @@ sous-reseau est fixe, celui du lien USB est configurable.
 
 ## Contraintes de plateforme
 
-**Budget d'endpoints.** Le S3 offre 6 endpoints dont 4 FIFO IN reellement
-utilisables. Le service alloue ses deux bulk separement, jamais en duplex, ce
-qui laisse la place a un CDC :
+**Budget d'endpoints — trois classes maximum.** Le S3 offre 6 endpoints dont 4
+FIFO IN reellement utilisables. La configuration validee est :
 
 ```
-MIDI  IN1/OUT1     NCM notif IN2     NCM data IN3/OUT2     CDC OUT3/IN4/IN5
+MIDI IN1/OUT1     NCM data IN2/OUT2 (duplex)     NCM notif IN3
 ```
 
-soit exactement 4 FIFO IN (IN5 n'en consomme pas). Ajouter une classe de plus
-ne passera pas.
+L'ordre d'allocation compte : le service prend la **paire de donnees en duplex
+d'abord**, la notification ensuite. Dans l'autre sens la notification occupe
+l'index 2 et les bulk finissent desapparies, ce que macOS refuse — l'interface
+apparait mais reste `inactive`, alternate setting 0, zero trame.
+
+**Ajouter un CDC-ACM au composite ne fonctionne pas.** La comptabilite du core
+l'autorise (`tinyusb_has_available_fifos()` tolere 5 endpoints IN quand CDC est
+charge, en considerant que sa notification 0x85 ne consomme pas de FIFO), et
+l'allocation reussit. Mais a l'usage l'hote enumere un peripherique **sans
+aucune interface** : `bNumConfigurations = 1`, sessionID stable, pas de boot
+loop, et rien d'instancie. Quatre classes sont hors budget en pratique.
+
+> Consequence pratique : pas de console serie USB, et pas de flash par
+> auto-reset. Le passage en mode download reste manuel (BOOT + rebranchement).
 
 **mDNS.** `CONFIG_MDNS_MAX_INTERFACES` vaut 3 dans les libs Arduino et les trois
 slots sont pris par les interfaces predefinies STA / AP / ETH.

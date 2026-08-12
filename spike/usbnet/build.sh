@@ -10,12 +10,13 @@ FQBN="esp32:esp32:XIAO_ESP32S3:PSRAM=opi"
 
 # usb_mode=0 -> USB-OTG/TinyUSB (requis pour MIDI et NCM)
 #
-# cdc_on_boot : NIDMI_CDC=1 ajoute un CDC-ACM au composite. Ca tient tout juste
-# dans le budget d'endpoints (4 FIFO IN, la limite du S3) et ca apporte deux
-# choses decisives pour iterer : une console serie, et surtout l'auto-reset au
-# flash (USBCDC::_onLineState -> usb_persist_restart) — plus besoin du bouton
-# BOOT. Le mettre a 0 pour valider la config finale sans CDC.
-CDC="${NIDMI_CDC:-1}"
+# cdc_on_boot : NIDMI_CDC=1 ajoute un CDC-ACM au composite, ce qui donnerait
+# une console serie et le flash par auto-reset. MESURE : ca ne marche pas.
+# L'allocation d'endpoints reussit et la comptabilite du core l'autorise, mais
+# l'hote enumere alors un peripherique SANS AUCUNE INTERFACE (bNumConfigurations
+# = 1, sessionID stable, pas de boot loop). Quatre classes sont hors budget en
+# pratique sur le S3. Defaut a 0 ; ne remettre a 1 que pour re-tester.
+CDC="${NIDMI_CDC:-0}"
 PROPS=(
   --build-property "build.usb_mode=0"
   --build-property "build.cdc_on_boot=$CDC"

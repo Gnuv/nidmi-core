@@ -118,17 +118,6 @@ void setup() {
   logLine("USB deja demarre par le core (cdc_on_boot=1)");
 #endif
 
-  // mDNS avant UsbNetService::begin() : le service se charge ensuite de
-  // l'activer sur le lien, au bon moment.
-  if (mdns_init() == ESP_OK) {
-    mdns_hostname_set(kHostname);
-    mdns_instance_name_set("NiDMI USB");
-    mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
-    logLine("mdns initialise");
-  } else {
-    logLine("ERREUR: mdns_init a echoue");
-  }
-
   nidmi_core::UsbNetConfig cfg;
   cfg.interfaceName = "NiDMI USB Network";
   cfg.ip = "192.168.7.1";
@@ -136,6 +125,18 @@ void setup() {
     logLine(String("ERREUR: UsbNetService::begin() a echoue, step=") + String((int)usbNet.lastStep()));
   } else {
     logLine(String("netif up, ip ") + usbNet.localIp().toString() + ", mac dev " + usbNet.deviceMac());
+  }
+
+  // mDNS APRES begin() : mdns_init() a besoin d'esp_netif_init() et de la
+  // boucle d'evenements par defaut, que begin() met en place. Dans l'autre
+  // ordre l'init echoue et le .local ne resout jamais.
+  if (mdns_init() == ESP_OK) {
+    mdns_hostname_set(kHostname);
+    mdns_instance_name_set("NiDMI USB");
+    mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
+    logLine("mdns initialise");
+  } else {
+    logLine("ERREUR: mdns_init a echoue");
   }
 
   server.on("/", handleRoot);
