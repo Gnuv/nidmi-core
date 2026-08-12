@@ -105,6 +105,8 @@ static void handleMidi() {
 }
 
 void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);  // eteinte (active a l'etat bas)
   Serial.begin(115200);
   delay(200);
   logLine("");
@@ -184,13 +186,39 @@ void loop() {
     logLine(link ? "lien USB monte" : "lien USB tombe");
   }
 
-  static uint32_t lastBeat = 0;
-  if (millis() - lastBeat > 10000) {
-    lastBeat = millis();
+  // Telemetrie par USB-MIDI, canal 16. Sans CDC ni WiFi c'est le seul canal
+  // sortant : la LED ne code qu'un chiffre, le MIDI porte tout l'etat.
+  //   CC 20 = UsbNcmStep atteint par usbNcmBegin()
+  //   CC 21 = lien USB monte
+  //   CC 22 = octet haut / CC 23 = octet bas des trames RX
+  //   CC 24 = trames rejetees   CC 25 = trames TX
+  static uint32_t lastReport = 0;
+  if (millis() - lastReport > 1000) {
+    lastReport = millis();
     const UsbNcmStats stats = usbNcmStats();
-    logLine(String("rx=") + stats.rxFrames + " drop=" + stats.rxDropped + " tx=" + stats.txFrames +
-            " txto=" + stats.txTimeouts);
+    usbMidi.controlChange(20, (uint8_t)usbNcmLastStep(), 16);
+    usbMidi.controlChange(21, usbNcmIsLinkUp() ? 1 : 0, 16);
+    usbMidi.controlChange(22, (uint8_t)((stats.rxFrames >> 7) & 0x7F), 16);
+    usbMidi.controlChange(23, (uint8_t)(stats.rxFrames & 0x7F), 16);
+    usbMidi.controlChange(24, (uint8_t)(stats.rxDropped & 0x7F), 16);
+    usbMidi.controlChange(25, (uint8_t)(stats.txFrames & 0x7F), 16);
   }
+
+  // Meme information en clignotement, au cas ou le MIDI serait lui aussi
+  // muet : n impulsions courtes, n = UsbNcmStep, puis une pause longue.
+  static uint32_t ledAt = 0;
+  static uint8_t ledPhase = 0;
+  const uint8_t pulses = (uint8_t)usbNcmLastStep() * 2;  // aller-retour par impulsion
+  if (millis() - ledAt > (ledPhase > pulses ? 900u : 150u)) {
+    ledAt = millis();
+    if (ledPhase > pulses) {
+      ledPhase = 0;
+    }
+    // LED du XIAO S3 : active a l'etat bas.
+    digitalWrite(LED_BUILTIN, (ledPhase % 2 == 0) ? LOW : HIGH);
+    ledPhase++;
+  }
+
   delay(2);
 }
 

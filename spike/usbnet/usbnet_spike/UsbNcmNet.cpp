@@ -32,6 +32,7 @@ esp_netif_t* s_netif = nullptr;
 esp_netif_driver_base_t s_driverBase = {};
 bool s_linkUp = false;
 bool s_started = false;
+nidmi_spike::UsbNcmStep s_lastStep = nidmi_spike::UsbNcmStep::NotRegistered;
 
 nidmi_spike::UsbNcmStats s_stats = {0, 0, 0, 0};
 
@@ -262,6 +263,7 @@ bool usbNcmBegin(const UsbNcmConfig& cfg) {
   if (s_started) {
     return true;
   }
+  s_lastStep = UsbNcmStep::NotRegistered;
   if (!s_interfaceEnabled) {
     log_e("usbNcmEnableInterface() doit etre appele avant USB.begin()");
     return false;
@@ -269,6 +271,7 @@ bool usbNcmBegin(const UsbNcmConfig& cfg) {
 
   strlcpy(s_ifDescription, cfg.ifDescription, sizeof(s_ifDescription));
 
+  s_lastStep = UsbNcmStep::SyncAlloc;
   s_txMutex = xSemaphoreCreateMutex();
   s_txDone = xSemaphoreCreateBinary();
   s_rxQueue = xQueueCreate(8, sizeof(RxFrame));
@@ -277,10 +280,12 @@ bool usbNcmBegin(const UsbNcmConfig& cfg) {
   }
 
   // Arduino ne les appelle que via WiFi.begin() ; ici on n'utilise pas le WiFi.
+  s_lastStep = UsbNcmStep::NetifInit;
   esp_err_t err = esp_netif_init();
   if (err != ESP_OK) {
     return false;
   }
+  s_lastStep = UsbNcmStep::EventLoop;
   err = esp_event_loop_create_default();
   if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
     return false;
@@ -308,11 +313,13 @@ bool usbNcmBegin(const UsbNcmConfig& cfg) {
   netifConfig.driver = nullptr;
   netifConfig.stack = ESP_NETIF_NETSTACK_DEFAULT_ETH;
 
+  s_lastStep = UsbNcmStep::NetifNew;
   esp_netif_t* netif = esp_netif_new(&netifConfig);
   if (netif == nullptr) {
     return false;
   }
 
+  s_lastStep = UsbNcmStep::NetifAttach;
   s_driverBase.post_attach = usbnetPostAttach;
   s_driverBase.netif = netif;
   if (esp_netif_attach(netif, &s_driverBase) != ESP_OK) {
@@ -334,28 +341,50 @@ bool usbNcmBegin(const UsbNcmConfig& cfg) {
     esp_netif_dhcps_start(netif);
   }
 
+  s_lastStep = UsbNcmStep::RxTask;
   if (xTaskCreate(rxTask, "usbncm_rx", 4096, nullptr, 12, &s_rxTask) != pdPASS) {
     return false;
   }
 
+  s_lastStep = UsbNcmStep::Ok;
   s_started = true;
   return true;
 }
 
+UsbNcmStep usbNcmLastStep() {
+  return s_lastStep;
+}
+
 void usbNcmUpdate() {
-  if (!s_started) {
+  // Volontairement gate sur l'enregistrement du descripteur, PAS sur
+  // s_started : l'annonce de lien est une affaire purement USB. La lier au
+  // succes du netif faisait qu'un echec cote reseau laissait l'hote sans
+  // porteur, donc sur alt 0, donc sans aucun trafic — et sans moyen de le voir.
+  if (!s_interfaceEnabled) {
     return;
   }
+
   const bool mounted = tud_mounted();
-  if (mounted == s_linkUp) {
-    return;
+  if (mounted != s_linkUp) {
+    s_linkUp = mounted;
+    tud_network_link_state(0, mounted);
+    if (s_started && s_netif != nullptr) {
+      if (mounted) {
+        esp_netif_action_connected(s_netif, nullptr, 0, nullptr);
+      } else {
+        esp_netif_action_disconnected(s_netif, nullptr, 0, nullptr);
+      }
+    }
   }
-  s_linkUp = mounted;
-  tud_network_link_state(0, mounted);
-  if (mounted) {
-    esp_netif_action_connected(s_netif, nullptr, 0, nullptr);
-  } else {
-    esp_netif_action_disconnected(s_netif, nullptr, 0, nullptr);
+
+  // Certains hotes n'activent l'interface de donnees (alt 1) qu'apres avoir
+  // recu la notification NETWORK_CONNECTION. Si elle part avant que l'hote
+  // ait fini de configurer, elle est perdue et personne ne relance : on la
+  // re-affirme tant que le lien est cense etre monte.
+  static uint32_t lastAssert = 0;
+  if (s_linkUp && millis() - lastAssert > 1000) {
+    lastAssert = millis();
+    tud_network_link_state(0, true);
   }
 }
 
@@ -392,6 +421,9 @@ bool usbNcmEnableInterface() {
 }
 bool usbNcmBegin(const UsbNcmConfig&) {
   return false;
+}
+UsbNcmStep usbNcmLastStep() {
+  return UsbNcmStep::NotRegistered;
 }
 void usbNcmUpdate() {}
 bool usbNcmIsLinkUp() {

@@ -48,8 +48,27 @@ constexpr bool usbNcmSupported() {
  */
 bool usbNcmEnableInterface();
 
+/**
+ * Etapes de usbNcmBegin(), dans l'ordre. Sans console serie (usb_mode=0 sans
+ * CDC), c'est le seul moyen de savoir ou ca casse : le code est clignote par
+ * la LED du boitier.
+ */
+enum class UsbNcmStep : uint8_t {
+  Ok = 0,
+  NotRegistered = 1,  // usbNcmEnableInterface() n'a pas ete appele ou a echoue
+  SyncAlloc = 2,      // mutex / semaphore / queue
+  NetifInit = 3,      // esp_netif_init()
+  EventLoop = 4,      // esp_event_loop_create_default()
+  NetifNew = 5,       // esp_netif_new()
+  NetifAttach = 6,    // esp_netif_attach()
+  RxTask = 7,         // xTaskCreate()
+};
+
 /** Cree le netif, demarre le serveur DHCP. A appeler APRES USB.begin(). */
 bool usbNcmBegin(const UsbNcmConfig& cfg = UsbNcmConfig());
+
+/** Etape atteinte par le dernier usbNcmBegin(). */
+UsbNcmStep usbNcmLastStep();
 
 /** A appeler dans loop() : suit l'etat du lien USB (mount / unmount). */
 void usbNcmUpdate();
