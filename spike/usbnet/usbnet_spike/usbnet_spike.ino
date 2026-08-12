@@ -112,11 +112,14 @@ void setup() {
 
   // Ordre impose : les descripteurs doivent tous etre enregistres avant
   // USB.begin(). Le constructeur d'USBMIDI a deja pose le sien.
-  if (!usbNcmEnableInterface()) {
-    logLine("ERREUR: enregistrement du descripteur NCM refuse");
-    return;
-  }
-  logLine("descripteur NCM enregistre");
+  //
+  // On continue meme si NCM est refuse : USB.begin() fera alors enumerer un
+  // peripherique MIDI seul. Un device diagnosticable vaut mieux qu'un device
+  // muet — sans CDC ni WiFi, "rien n'enumere" est indiscernable d'un cable
+  // charge-only.
+  const bool ncmRegistered = usbNcmEnableInterface();
+  logLine(ncmRegistered ? "descripteur NCM enregistre"
+                        : "ERREUR: descripteur NCM refuse — on continue en MIDI seul");
 
   USB.productName("NiDMI");
   USB.manufacturerName("NiDMI");
@@ -127,6 +130,11 @@ void setup() {
   USB.usbProtocol(MISC_PROTOCOL_IAD);
   USB.begin();
   logLine("USB.begin() ok");
+
+  if (!ncmRegistered) {
+    logLine("NCM indisponible : le peripherique doit tout de meme apparaitre en MIDI.");
+    return;
+  }
 
   UsbNcmConfig cfg;
   cfg.ifDescription = "NiDMI USB Network";
