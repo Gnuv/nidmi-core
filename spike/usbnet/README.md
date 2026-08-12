@@ -126,6 +126,7 @@ en bout que les deux classes cohabitent.
 - [x] **etape 3 — HTTP + mDNS macOS** : `nidmi-usb.local` resout et repond
 - [x] **coexistence MIDI + NCM** : HTTP par NCM declenche une note USB-MIDI
 - [x] **route par defaut intacte** : le lien USB ne detourne rien
+- [x] **code de nidmi-core valide sur macOS** (et non plus une copie locale)
 - [ ] Linux
 - [ ] Windows (go / no-go : pas de repli RNDIS sans rebuild des libs)
 

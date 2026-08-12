@@ -153,9 +153,17 @@ Sans CDC il n'y a pas de console : `lastStep()` rend l'etape atteinte par
 
 ## Validation
 
-Mesure sur macOS 26.5 / XIAO ESP32S3 : bail DHCP en 2 s, ping 20/20 a
-0.6-1.2 ms, route par defaut intacte, HTTP par IP et par nom, et une requete
-HTTP arrivee par NCM declenchant une note sur l'USB-MIDI du meme cable.
+Mesure du code de cette bibliotheque sur macOS 26.5 / XIAO ESP32S3 :
+
+```
+bail DHCP   192.168.7.2 en 2 s, en14 active
+ping        10/10, 0.799 / 0.922 / 1.278 ms
+route       defaut inchangee sur en0
+http        /status par IP et par nom, 200
+mdns        dns-sd voit "NiDMI USB" sur if 23 (le lien USB)
+midi        HTTP par NCM -> 0x90 3c 64 / 0x80 3c 00 sur le port USB-MIDI
+compteurs   step 0 (Ok), 103 trames RX, 0 rejetee, 36 TX, 0 timeout
+```
 
 Linux et Windows restent a valider. Protocole complet dans
 `spike/usbnet/README.md` (branche `feat/usb-ncm-spike`).
