@@ -42,6 +42,57 @@ do_compile() {
   echo "$CDC" > "$STAMP"
 }
 
+ESPTOOL="$HOME/Library/Arduino15/packages/esp32/tools/esptool_py/4.5.1/esptool"
+
+usb_product() { ioreg -r -c IOUSBHostDevice -w 0 2>/dev/null | sed -n 's/.*"USB Product Name" = "\(.*\)"/\1/p' | head -1; }
+any_port()    { ls /dev/cu.usbmodem* 2>/dev/null | head -1; }
+in_rom()      { [ "$(usb_product)" = "USB JTAG_serial debug unit" ]; }
+
+# Amene la carte en mode download sans toucher au bouton BOOT.
+#
+# Le firmware doit embarquer un CDC (NIDMI_CDC=1) : USBCDC::_onLineState()
+# appelle alors usb_persist_restart(RESTART_BOOTLOADER) sur le motif DTR/RTS.
+# Le piege est qu'en repartant, la carte enumere sa ROM USB-Serial-JTAG sous un
+# NOM DE PORT DIFFERENT — esptool tient l'ancien et echoue sur "Device not
+# configured". On declenche donc le reset, puis on attend le nouveau port.
+enter_download() {
+  if in_rom; then
+    echo "deja en mode download."
+    return 0
+  fi
+  local port; port="$(any_port)"
+  if [ -z "$port" ]; then
+    echo "Aucun port serie : le firmware actuel n'a pas de CDC." >&2
+    echo "Passer la carte en bootloader a la main (BOOT + rebranchement)," >&2
+    echo "puis reflasher avec NIDMI_CDC=1 pour ne plus avoir a le refaire." >&2
+    return 1
+  fi
+  echo "declenchement du reset via $port ..."
+  # Echec attendu : le port disparait pendant la sequence de reset.
+  "$ESPTOOL" --port "$port" --before default_reset --after no_reset chip_id >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do
+    if in_rom && [ -n "$(any_port)" ]; then
+      echo "mode download atteint sur $(any_port)"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "La carte n'est pas passee en mode download." >&2
+  return 1
+}
+
+do_flash() {
+  local port="${1:-}"
+  if [ -z "$port" ]; then
+    enter_download || exit 1
+    port="$(any_port)"
+  fi
+  arduino-cli upload --fqbn "$FQBN" -p "$port" --input-dir "$OUT" "$SKETCH"
+  echo
+  echo "Flash termine. Si la carte reste en ROM, debrancher/rebrancher :"
+  echo "esptool ne sort pas le S3 du mode download par lui-meme."
+}
+
 case "${1:-compile}" in
   compile)
     do_compile --warnings default
@@ -49,26 +100,12 @@ case "${1:-compile}" in
     echo "binaire : $OUT/usbnet_spike.ino.bin"
     ;;
   upload)
-    PORT="${2:-}"
-    if [ -z "$PORT" ]; then
-      echo "usage: $0 upload /dev/cu.usbmodemXXXX" >&2
-      echo "ports disponibles :" >&2
-      arduino-cli board list >&2
-      exit 1
-    fi
     do_compile
-    # --input-dir : reflashe exactement ce qui vient d'etre compile, sans
-    # relancer une seconde compilation.
-    arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir "$OUT" "$SKETCH"
+    do_flash "${2:-}"
     ;;
   flash)
     # Reflashe le dernier binaire sans recompiler.
-    PORT="${2:-}"
-    if [ -z "$PORT" ]; then
-      echo "usage: $0 flash /dev/cu.usbmodemXXXX" >&2
-      exit 1
-    fi
-    arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir "$OUT" "$SKETCH"
+    do_flash "${2:-}"
     ;;
   *)
     echo "usage: $0 [compile|upload <port>|flash <port>]" >&2
