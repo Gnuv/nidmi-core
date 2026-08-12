@@ -159,14 +159,15 @@ void setup() {
     mdns_hostname_set(kHostname);
     mdns_instance_name_set("NiDMI USB spike");
     mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
-    // L'enregistrement peut se faire tout de suite ; l'activation IPv4, non.
-    // Mesure : avec ENABLE_IP4 emis ici, le service n'apparait sur aucune
-    // interface cote hote (dns-sd ne le voit pas sur if 23). mdns veut que le
-    // netif porte deja une adresse *et* soit monte — ce qui n'arrive qu'au
-    // moment ou l'hote active l'interface de donnees NCM.
-    mdnsRegistered = (mdns_register_netif(usbNcmNetif()) == ESP_OK);
-    logLine(mdnsRegistered ? "mdns: netif usb enregistre (activation a la montee du lien)"
-                           : "ERREUR: mdns_register_netif a echoue");
+    // Pas de mdns_register_netif() : les trois slots du composant sont pris
+    // par les interfaces predefinies (voir UsbNcmNet.cpp). Le netif porte la
+    // cle ETH_DEF, donc mdns le connait deja. Reste a l'activer — et seulement
+    // a la montee du lien : emis dans setup(), ENABLE_IP4 ne prend pas, le
+    // netif n'etant ni monte ni joignable tant que l'hote n'a pas active
+    // l'interface de donnees NCM.
+    mdnsRegistered = (usbNcmNetif() != nullptr);
+    logLine(mdnsRegistered ? "mdns: netif ETH_DEF pret (activation a la montee du lien)"
+                           : "ERREUR: pas de netif pour mdns");
   } else {
     logLine("ERREUR: mdns_init a echoue");
   }

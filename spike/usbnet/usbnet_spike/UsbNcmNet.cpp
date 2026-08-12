@@ -300,7 +300,15 @@ bool usbNcmBegin(const UsbNcmConfig& cfg) {
   ipInfo.gw.addr = 0;
 
   static esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_ETH();
-  base.if_key = "USB_NCM";
+  // Mesure : avec une cle custom ("USB_NCM"), mdns_register_netif() echoue.
+  // CONFIG_MDNS_MAX_INTERFACES=3 dans les libs Arduino, et les trois slots
+  // sont deja pris par les interfaces predefinies STA / AP / ETH — il n'en
+  // reste aucun pour une interface enregistree a l'execution, et ce n'est pas
+  // reglable sans reconstruire les libs IDF.
+  // On prend donc la cle du slot ETH predefini, que le composant mdns resout
+  // via esp_netif_get_handle_from_ifkey(). Corollaire a retenir : sur cette
+  // pile, un netif USB et un vrai Ethernet ne peuvent pas coexister sous mDNS.
+  base.if_key = "ETH_DEF";
   base.if_desc = "usb_ncm";
   base.route_prio = 10;  // sous le WiFi : jamais l'interface par defaut cote ESP
   base.flags = (esp_netif_flags_t)(ESP_NETIF_DHCP_SERVER | ESP_NETIF_FLAG_AUTOUP);
