@@ -122,12 +122,15 @@ en bout que les deux classes cohabitent.
 
 - [x] compile sans warning (`arduino-cli` 1.0.4, core esp32 3.3.1, S3)
 - [x] **etape 1 — enumeration macOS** : composite complet
-- [x] **etape 2 — netif + DHCP + ping macOS** : bail obtenu, 0 % de perte
-- [x] **etape 3a — HTTP par IP** : `curl http://192.168.7.1/status` repond
-- [ ] etape 3b — mDNS : correctif en attente de validation
+- [x] **etape 2 — netif + DHCP + ping macOS** : bail en 2 s, 0 % de perte
+- [x] **etape 3 — HTTP + mDNS macOS** : `nidmi-usb.local` resout et repond
 - [x] **coexistence MIDI + NCM** : HTTP par NCM declenche une note USB-MIDI
+- [x] **route par defaut intacte** : le lien USB ne detourne rien
 - [ ] Linux
 - [ ] Windows (go / no-go : pas de repli RNDIS sans rebuild des libs)
+
+**Conclusion macOS : le spike valide l'approche.** Une interface web servie
+par le cable, en parallele d'un USB-MIDI fonctionnel, sur un seul connecteur.
 
 ### Mesures macOS 26.5 (Darwin 25.5.0), 12 aout 2026
 
@@ -138,14 +141,17 @@ peripherique  NiDMI  VID 0x2886  PID 0x0056  bDeviceClass 239/2/1 (IAD)
   itf 2  classe 2 / 13    CDC-NCM control
   itf 3  classe 10 / 0/1  CDC-Data (NTB)
 
-en14      192.168.7.2 par DHCP, status active
-ping      4/4, 0.815 / 1.026 / 1.540 ms
-route     defaut inchangee sur en0 — le lien USB ne detourne rien
-http      /status repond, rx 165 trames / 0 rejetee / 0 timeout TX
+en14      192.168.7.2 par DHCP en 2 s, status active
+ping      20/20, 0.614 / 0.948 / 1.183 ms, ecart-type 0.117
+route     defaut inchangee sur en0, aucun resolveur DNS sur en14
+http      repond par IP et par nom
+mdns      dns-sd voit "NiDMI USB spike" sur if 23 (= en14)
 midi      HTTP par NCM -> 0x90 0x3c 0x64 puis 0x80 0x3c 0x00 sur le port USB-MIDI
+telemetry CC20=0 (Step::Ok) CC21=1 (lien) CC22/23=175 trames RX CC24=0 rejetee
+          CC25=52 TX CC26=3 (mdns enregistre + annonce)
 ```
 
-### Deux courses trouvees a l'execution
+### Trois defauts trouves a l'execution
 
 **Annonce de lien.** `usbNcmUpdate()` conditionnait `tud_network_link_state()`
 au succes du netif, et ne l'emettait qu'une fois, sur la transition de
@@ -156,13 +162,23 @@ etait perdue : pas de porteur, interface de donnees laissee sur **alt 0**
 descripteur seul et en re-affirmant l'annonce chaque seconde.
 
 **Activation mDNS.** `mdns_netif_action(ENABLE_IP4)` emis dans `setup()` ne
-prend pas : `dns-sd -B _http._tcp` ne voit pas le service sur l'interface du
-lien USB. Le composant mdns veut un netif deja monte et adresse, ce qui
+prend pas. Le composant mdns veut un netif deja monte et adresse, ce qui
 n'arrive qu'a l'activation de l'interface de donnees par l'hote. Deplace a la
 montee du lien, avec quelques re-annonces espacees.
 
-Les deux ont la meme forme : un evenement unique emis trop tot, perdu sans
-aucun diagnostic. C'est le motif a retenir pour `UsbNetService`.
+**Slots mDNS satures.** Cause reelle du `.local` muet, revelee par `/log` une
+fois l'etape 2 acquise : `mdns_register_netif() a echoue`.
+`CONFIG_MDNS_MAX_INTERFACES=3` dans les libs Arduino et les trois slots sont
+pris par les interfaces predefinies STA / AP / ETH — aucun ne reste pour une
+interface enregistree a l'execution, et ce n'est pas reglable sans
+reconstruire les libs. Le netif prend donc la cle `ETH_DEF` pour occuper le
+slot ETH predefini.
+
+**A retenir pour `UsbNetService`.** Les deux premiers ont la meme forme : un
+evenement unique emis trop tot, perdu sans aucun diagnostic — ces annonces
+doivent etre idempotentes et repetees, jamais one-shot. Le troisieme est une
+contrainte de plateforme a inscrire dans le contrat du core : **sur cette
+pile, un netif USB et un vrai Ethernet ne peuvent pas coexister sous mDNS.**
 
 ## Points a surveiller au runtime
 
