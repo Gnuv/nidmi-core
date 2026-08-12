@@ -32,12 +32,32 @@ facile a introduire ici.
 ## Build
 
 ```bash
-./spike/usbnet/build.sh compile
-./spike/usbnet/build.sh upload /dev/cu.usbmodemXXXX
+./spike/usbnet/build.sh compile                      # -> spike/usbnet/build/
+./spike/usbnet/build.sh upload /dev/cu.usbmodemXXXX  # compile puis flashe
+./spike/usbnet/build.sh flash  /dev/cu.usbmodemXXXX  # reflashe sans recompiler
 ```
+
+Artefacts dans `spike/usbnet/build/` (ignore par git) :
+`usbnet_spike.ino.bin` (577 ko, l'application seule) et
+`usbnet_spike.ino.merged.bin` (8 Mo, bootloader + partitions + app, a flasher
+a l'offset 0 si tu passes par esptool directement).
 
 `usb_mode=0` + `cdc_on_boot=0` : USB-OTG/TinyUSB, pas de CDC-ACM (on garde les
 FIFO IN pour MIDI + NCM).
+
+### Passer la carte en mode bootloader
+
+Consequence directe de `cdc_on_boot=0` : **il n'y a pas de port serie USB quand
+le firmware tourne**, donc pas d'auto-reset possible pour le flash. Sur le
+XIAO S3 :
+
+1. maintenir **BOOT** enfonce
+2. brancher le cable (ou appuyer sur **RESET** si deja branche)
+3. relacher BOOT
+
+Le S3 expose alors son USB-Serial-JTAG ROM et un `/dev/cu.usbmodemXXXX`
+apparait. Verifier avec `arduino-cli board list`, puis flasher. Apres le flash,
+un RESET fait repartir le firmware — et le port disparait, c'est normal.
 
 ### Recuperer les logs
 
