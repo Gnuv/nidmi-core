@@ -30,6 +30,9 @@ static WebServer server(80);
 
 static const char* kHostname = "nidmi-usb";
 
+static bool mdnsRegistered = false;
+static bool mdnsAnnounced = false;
+
 // Journal circulaire : avec usb_mode=0 il n'y a pas de CDC, le port serie sort
 // sur UART0 (D6/D7). /log evite d'avoir a brancher un adaptateur USB-TTL une
 // fois que l'etape 2 fonctionne.
@@ -155,13 +158,15 @@ void setup() {
   if (mdns_init() == ESP_OK) {
     mdns_hostname_set(kHostname);
     mdns_instance_name_set("NiDMI USB spike");
-    if (mdns_register_netif(usbNcmNetif()) == ESP_OK) {
-      mdns_netif_action(usbNcmNetif(), (mdns_event_actions_t)(MDNS_EVENT_ENABLE_IP4 | MDNS_EVENT_ANNOUNCE_IP4));
-      logLine("mdns: netif usb enregistre");
-    } else {
-      logLine("ERREUR: mdns_register_netif a echoue");
-    }
     mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
+    // L'enregistrement peut se faire tout de suite ; l'activation IPv4, non.
+    // Mesure : avec ENABLE_IP4 emis ici, le service n'apparait sur aucune
+    // interface cote hote (dns-sd ne le voit pas sur if 23). mdns veut que le
+    // netif porte deja une adresse *et* soit monte — ce qui n'arrive qu'au
+    // moment ou l'hote active l'interface de donnees NCM.
+    mdnsRegistered = (mdns_register_netif(usbNcmNetif()) == ESP_OK);
+    logLine(mdnsRegistered ? "mdns: netif usb enregistre (activation a la montee du lien)"
+                           : "ERREUR: mdns_register_netif a echoue");
   } else {
     logLine("ERREUR: mdns_init a echoue");
   }
@@ -184,6 +189,29 @@ void loop() {
   if (link != lastLink) {
     lastLink = link;
     logLine(link ? "lien USB monte" : "lien USB tombe");
+
+    if (mdnsRegistered) {
+      if (link) {
+        // Activation seulement maintenant : le netif est monte et adresse.
+        mdns_netif_action(usbNcmNetif(),
+                          (mdns_event_actions_t)(MDNS_EVENT_ENABLE_IP4 | MDNS_EVENT_ANNOUNCE_IP4));
+        mdnsAnnounced = true;
+        logLine("mdns: IPv4 active et annonce sur le lien USB");
+      } else {
+        mdns_netif_action(usbNcmNetif(), MDNS_EVENT_DISABLE_IP4);
+        mdnsAnnounced = false;
+      }
+    }
+  }
+
+  // L'hote peut n'avoir sa pile mDNS prete qu'apres le bail DHCP : on
+  // re-annonce quelques fois plutot que de compter sur un unique paquet.
+  static uint32_t lastAnnounce = 0;
+  static uint8_t announceLeft = 5;
+  if (mdnsAnnounced && announceLeft > 0 && millis() - lastAnnounce > 3000) {
+    lastAnnounce = millis();
+    announceLeft--;
+    mdns_netif_action(usbNcmNetif(), MDNS_EVENT_ANNOUNCE_IP4);
   }
 
   // Telemetrie par USB-MIDI, canal 16. Sans CDC ni WiFi c'est le seul canal
@@ -202,6 +230,7 @@ void loop() {
     usbMidi.controlChange(23, (uint8_t)(stats.rxFrames & 0x7F), 16);
     usbMidi.controlChange(24, (uint8_t)(stats.rxDropped & 0x7F), 16);
     usbMidi.controlChange(25, (uint8_t)(stats.txFrames & 0x7F), 16);
+    usbMidi.controlChange(26, (uint8_t)((mdnsRegistered ? 1 : 0) | (mdnsAnnounced ? 2 : 0)), 16);
   }
 
   // Meme information en clignotement, au cas ou le MIDI serait lui aussi

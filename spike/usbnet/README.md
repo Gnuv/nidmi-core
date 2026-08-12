@@ -121,11 +121,48 @@ en bout que les deux classes cohabitent.
 ## Etat
 
 - [x] compile sans warning (`arduino-cli` 1.0.4, core esp32 3.3.1, S3)
-- [ ] etape 1 — enumeration macOS
-- [ ] etape 2 — netif + DHCP + ping macOS
-- [ ] etape 3 — HTTP + mDNS macOS
+- [x] **etape 1 — enumeration macOS** : composite complet
+- [x] **etape 2 — netif + DHCP + ping macOS** : bail obtenu, 0 % de perte
+- [x] **etape 3a — HTTP par IP** : `curl http://192.168.7.1/status` repond
+- [ ] etape 3b — mDNS : correctif en attente de validation
+- [x] **coexistence MIDI + NCM** : HTTP par NCM declenche une note USB-MIDI
 - [ ] Linux
 - [ ] Windows (go / no-go : pas de repli RNDIS sans rebuild des libs)
+
+### Mesures macOS 26.5 (Darwin 25.5.0), 12 aout 2026
+
+```
+peripherique  NiDMI  VID 0x2886  PID 0x0056  bDeviceClass 239/2/1 (IAD)
+  itf 0  classe 1 / 1     Audio Control
+  itf 1  classe 1 / 3     MIDIStreaming     -> CoreMIDI: port visible
+  itf 2  classe 2 / 13    CDC-NCM control
+  itf 3  classe 10 / 0/1  CDC-Data (NTB)
+
+en14      192.168.7.2 par DHCP, status active
+ping      4/4, 0.815 / 1.026 / 1.540 ms
+route     defaut inchangee sur en0 — le lien USB ne detourne rien
+http      /status repond, rx 165 trames / 0 rejetee / 0 timeout TX
+midi      HTTP par NCM -> 0x90 0x3c 0x64 puis 0x80 0x3c 0x00 sur le port USB-MIDI
+```
+
+### Deux courses trouvees a l'execution
+
+**Annonce de lien.** `usbNcmUpdate()` conditionnait `tud_network_link_state()`
+au succes du netif, et ne l'emettait qu'une fois, sur la transition de
+`tud_mounted()`. Si l'hote n'avait pas fini de configurer, la notification
+etait perdue : pas de porteur, interface de donnees laissee sur **alt 0**
+(`bNumEndpoints = 0`), aucun trafic possible. Symptome cote macOS :
+`status: inactive` et aucun bail. Corrige en gatant sur l'enregistrement du
+descripteur seul et en re-affirmant l'annonce chaque seconde.
+
+**Activation mDNS.** `mdns_netif_action(ENABLE_IP4)` emis dans `setup()` ne
+prend pas : `dns-sd -B _http._tcp` ne voit pas le service sur l'interface du
+lien USB. Le composant mdns veut un netif deja monte et adresse, ce qui
+n'arrive qu'a l'activation de l'interface de donnees par l'hote. Deplace a la
+montee du lien, avec quelques re-annonces espacees.
+
+Les deux ont la meme forme : un evenement unique emis trop tot, perdu sans
+aucun diagnostic. C'est le motif a retenir pour `UsbNetService`.
 
 ## Points a surveiller au runtime
 
