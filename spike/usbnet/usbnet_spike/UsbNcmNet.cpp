@@ -94,16 +94,26 @@ extern "C" uint16_t tusb_ncm_load_descriptor(uint8_t* dst, uint8_t* itf) {
   uint8_t strIndex = tinyusb_add_string_descriptor(s_ifDescription);
   uint8_t macIndex = tinyusb_add_string_descriptor(s_hostMacStr);
 
-  // NCM : 1 endpoint IN interrupt (notification) + 1 paire bulk in/out.
-  // Budget S3 : MIDI en consomme deja 1 FIFO IN, il en reste 4 au total.
+  // NCM : 1 endpoint IN interrupt (notification) + 1 bulk IN + 1 bulk OUT.
+  //
+  // Allocation SEPAREE des deux bulk, pas via tinyusb_get_free_duplex_endpoint().
+  // Le duplex impose le meme index en entree et en sortie, ce qui ne passe plus
+  // des que CDC est actif : CDC reserve OUT3 / IN4 / IN5, MIDI prend le 1, la
+  // notification le 2, et il ne reste aucun index libre des deux cotes.
+  // En allouant separement on obtient IN3 / OUT2 et tout rentre :
+  //   MIDI IN1/OUT1, NCM notif IN2, NCM data IN3/OUT2, CDC OUT3/IN4/IN5
+  //   soit 4 FIFO IN reels (IN5 n'en consomme pas) = la limite exacte du S3.
+  // C'est ce qui rend possible une console CDC, donc le flash par auto-reset.
   uint8_t epNotif = tinyusb_get_free_in_endpoint();
   TU_VERIFY(epNotif != 0);
-  uint8_t epData = tinyusb_get_free_duplex_endpoint();
-  TU_VERIFY(epData != 0);
+  uint8_t epIn = tinyusb_get_free_in_endpoint();
+  TU_VERIFY(epIn != 0);
+  uint8_t epOut = tinyusb_get_free_out_endpoint();
+  TU_VERIFY(epOut != 0);
 
   uint8_t descriptor[TUD_CDC_NCM_DESC_LEN] = {
-    TUD_CDC_NCM_DESCRIPTOR(*itf, strIndex, macIndex, (uint8_t)(0x80 | epNotif), 64, epData,
-                           (uint8_t)(0x80 | epData), CFG_TUD_ENDOINT_SIZE, CFG_TUD_NET_MTU)
+    TUD_CDC_NCM_DESCRIPTOR(*itf, strIndex, macIndex, (uint8_t)(0x80 | epNotif), 64, epOut,
+                           (uint8_t)(0x80 | epIn), CFG_TUD_ENDOINT_SIZE, CFG_TUD_NET_MTU)
   };
   *itf += 2;  // interface de controle + interface de donnees
   memcpy(dst, descriptor, TUD_CDC_NCM_DESC_LEN);

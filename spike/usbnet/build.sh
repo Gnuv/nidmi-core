@@ -8,11 +8,29 @@ OUT="$HERE/build"
 FQBN="esp32:esp32:XIAO_ESP32S3:PSRAM=opi"
 
 # usb_mode=0 -> USB-OTG/TinyUSB (requis pour MIDI et NCM)
-# cdc_on_boot=0 -> pas de CDC-ACM : on garde les FIFO IN pour MIDI + NCM
+#
+# cdc_on_boot : NIDMI_CDC=1 ajoute un CDC-ACM au composite. Ca tient tout juste
+# dans le budget d'endpoints (4 FIFO IN, la limite du S3) et ca apporte deux
+# choses decisives pour iterer : une console serie, et surtout l'auto-reset au
+# flash (USBCDC::_onLineState -> usb_persist_restart) — plus besoin du bouton
+# BOOT. Le mettre a 0 pour valider la config finale sans CDC.
+CDC="${NIDMI_CDC:-1}"
 PROPS=(
   --build-property "build.usb_mode=0"
-  --build-property "build.cdc_on_boot=0"
+  --build-property "build.cdc_on_boot=$CDC"
 )
+echo "cdc_on_boot=$CDC  (NIDMI_CDC=0 pour compiler sans console ni auto-reset)"
+
+# arduino-cli ne reconstruit pas le core quand seul cdc_on_boot change : on
+# obtient un "undefined reference to USBSerial" au link, parce que USBCDC.cpp
+# reste celui compile avec l'ancienne valeur. On force --clean uniquement a la
+# bascule, pour ne pas payer une reconstruction complete a chaque build.
+STAMP="$OUT/.cdc_mode"
+if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$CDC" ]; then
+  echo "  (bascule de cdc_on_boot -> reconstruction complete du core)"
+  PROPS+=(--clean)
+fi
+mkdir -p "$OUT" && echo "$CDC" > "$STAMP"
 
 case "${1:-compile}" in
   compile)
