@@ -79,14 +79,25 @@ struct UsbNetStats {
  */
 class UsbNetService {
 public:
-  UsbNetService() = default;
+  /**
+   * Le constructeur enregistre le descripteur NCM, comme celui d'USBMIDI.
+   *
+   * Ce n'est pas un detail de style : avec `cdc_on_boot=1` le core appelle
+   * USB.begin() depuis main() AVANT setup(), et tout descripteur enregistre
+   * dans setup() est ignore en silence — le peripherique enumere sans
+   * l'interface reseau. Declarer le service en global est donc la seule forme
+   * correcte dans toutes les configurations :
+   *
+   *     static nidmi_core::UsbNetService usbNet;   // portee globale
+   */
+  UsbNetService();
 
   /** Vrai si la cible peut faire du NCM (decide a la compilation). */
   static constexpr bool available() { return NIDMI_USB_NET_SUPPORTED != 0; }
 
   /**
-   * Enregistre le descripteur NCM aupres de TinyUSB.
-   * IMPERATIF : avant USB.begin(), comme le constructeur d'USBMIDI.
+   * Enregistre le descripteur NCM aupres de TinyUSB. Idempotent.
+   * Deja fait par le constructeur ; utile seulement pour verifier le resultat.
    */
   bool enableInterface();
 

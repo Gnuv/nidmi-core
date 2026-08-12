@@ -4,6 +4,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKETCH="$HERE/usbnet_spike"
+LIB="$(cd "$HERE/../.." && pwd)"   # le banc exerce nidmi-core, pas une copie
 OUT="$HERE/build"
 FQBN="esp32:esp32:XIAO_ESP32S3:PSRAM=opi"
 
@@ -26,16 +27,24 @@ echo "cdc_on_boot=$CDC  (NIDMI_CDC=0 pour compiler sans console ni auto-reset)"
 # reste celui compile avec l'ancienne valeur. On force --clean uniquement a la
 # bascule, pour ne pas payer une reconstruction complete a chaque build.
 STAMP="$OUT/.cdc_mode"
+mkdir -p "$OUT"
 if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$CDC" ]; then
   echo "  (bascule de cdc_on_boot -> reconstruction complete du core)"
   PROPS+=(--clean)
 fi
-mkdir -p "$OUT" && echo "$CDC" > "$STAMP"
+
+# Le temoin n'est ecrit qu'apres une compilation reussie. L'ecrire en amont le
+# desynchronisait du cache des que la commande ne compilait pas (flash), et le
+# --clean suivant sautait : retour du "undefined reference to USBSerial".
+do_compile() {
+  arduino-cli compile --fqbn "$FQBN" "${PROPS[@]}" "$@" \
+    --library "$LIB" --output-dir "$OUT" "$SKETCH"
+  echo "$CDC" > "$STAMP"
+}
 
 case "${1:-compile}" in
   compile)
-    arduino-cli compile --fqbn "$FQBN" "${PROPS[@]}" --warnings default \
-      --output-dir "$OUT" "$SKETCH"
+    do_compile --warnings default
     echo
     echo "binaire : $OUT/usbnet_spike.ino.bin"
     ;;
@@ -47,7 +56,7 @@ case "${1:-compile}" in
       arduino-cli board list >&2
       exit 1
     fi
-    arduino-cli compile --fqbn "$FQBN" "${PROPS[@]}" --output-dir "$OUT" "$SKETCH"
+    do_compile
     # --input-dir : reflashe exactement ce qui vient d'etre compile, sans
     # relancer une seconde compilation.
     arduino-cli upload --fqbn "$FQBN" -p "$PORT" --input-dir "$OUT" "$SKETCH"

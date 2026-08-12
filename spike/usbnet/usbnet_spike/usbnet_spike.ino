@@ -1,41 +1,33 @@
 /**
- * SPIKE nidmi-core — USB-MIDI + interface reseau USB (CDC-NCM) sur ESP32-S3.
+ * Banc de test de nidmi_core::UsbNetService — USB-MIDI + interface reseau USB
+ * (CDC-NCM) sur ESP32-S3.
  *
- * Valide les etapes 1 a 3 avant tout ajout dans nidmi-core :
- *   1. le composite MIDI+NCM enumere, le MIDI reste visible cote hote
- *   2. netif + DHCP : l'hote obtient une IP, le ping passe
- *   3. HTTP + mDNS : http://nidmi-usb.local repond via le cable
+ * Ce sketch n'embarque plus sa propre pile : il exerce directement le code de
+ * la bibliotheque, pour que ce qui est valide ici soit ce qui sera livre.
  *
- * Le WiFi n'est jamais demarre : tout ce qui repond ici passe par l'USB.
- *
- * Build : ./spike/usbnet/build.sh
+ * Build : ./spike/usbnet/build.sh          (avec CDC : console + auto-reset)
+ *         NIDMI_CDC=0 ./spike/usbnet/build.sh   (config finale, sans CDC)
  */
 
 #include <Arduino.h>
+#include <nidmi_core.h>
 
-#include "UsbNcmNet.h"
-
-#if NIDMI_USB_NCM_SUPPORTED
+#if NIDMI_USB_NET_SUPPORTED
 
 #include <ESPmDNS.h>
 #include <USB.h>
 #include <USBMIDI.h>
 #include <WebServer.h>
-#include <mdns.h>
 
-using namespace nidmi_spike;
-
+// Portee globale, imperativement : avec cdc_on_boot=1 le core appelle
+// USB.begin() avant setup(), et un descripteur enregistre dans setup() est
+// ignore en silence. Les constructeurs des deux objets posent le leur.
 static USBMIDI usbMidi;
-static WebServer server(80);
+static nidmi_core::UsbNetService usbNet;
 
+static WebServer server(80);
 static const char* kHostname = "nidmi-usb";
 
-static bool mdnsRegistered = false;
-static bool mdnsAnnounced = false;
-
-// Journal circulaire : avec usb_mode=0 il n'y a pas de CDC, le port serie sort
-// sur UART0 (D6/D7). /log evite d'avoir a brancher un adaptateur USB-TTL une
-// fois que l'etape 2 fonctionne.
 static String logBuffer;
 
 static void logLine(const String& line) {
@@ -48,22 +40,17 @@ static void logLine(const String& line) {
 }
 
 static String statusText() {
-  const UsbNcmStats stats = usbNcmStats();
-  esp_netif_ip_info_t ip = {};
-  if (usbNcmNetif() != nullptr) {
-    esp_netif_get_ip_info(usbNcmNetif(), &ip);
-  }
-
+  const nidmi_core::UsbNetStats stats = usbNet.stats();
   String out;
   out += "link      : ";
-  out += usbNcmIsLinkUp() ? "up" : "down";
+  out += usbNet.isLinkUp() ? "up" : "down";
+  out += "\nstep      : " + String((int)usbNet.lastStep()) + "  (0 = Ok)";
   out += "\nmac dev   : ";
-  out += usbNcmDeviceMac();
+  out += usbNet.deviceMac();
   out += "\nmac host  : ";
-  out += usbNcmHostMac();
-  out += "\nip        : " + IPAddress(ip.ip.addr).toString();
-  out += "\nnetmask   : " + IPAddress(ip.netmask.addr).toString();
-  out += "\ngateway   : " + IPAddress(ip.gw.addr).toString() + "  (0.0.0.0 attendu)";
+  out += usbNet.hostMac();
+  out += "\nip        : " + usbNet.localIp().toString();
+  out += "\nbroadcast : " + usbNet.broadcastAddress();
   out += "\nhostname  : ";
   out += kHostname;
   out += ".local\nrx frames : " + String(stats.rxFrames);
@@ -78,11 +65,11 @@ static String statusText() {
 static void handleRoot() {
   String page = F(
     "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>NiDMI USB spike</title>"
+    "<title>NiDMI USB</title>"
     "<style>body{font:14px/1.5 system-ui,sans-serif;margin:2rem;max-width:40rem}"
     "pre{background:#f4f4f5;padding:1rem;overflow-x:auto}"
     "@media(prefers-color-scheme:dark){body{background:#18181b;color:#e4e4e7}pre{background:#27272a}}</style>"
-    "<h1>NiDMI &mdash; spike USB NCM</h1>"
+    "<h1>NiDMI &mdash; UsbNetService</h1>"
     "<p>Cette page arrive par le c&acirc;ble USB. Le WiFi n'a jamais &eacute;t&eacute; d&eacute;marr&eacute;.</p><pre>");
   page += statusText();
   page += F("</pre><p><a href=/log>journal</a> &middot; <a href=/midi>envoyer une note MIDI</a></p>");
@@ -113,63 +100,42 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   logLine("");
-  logLine("=== spike USB NCM + USB MIDI ===");
+  logLine("=== banc de test UsbNetService ===");
+  logLine(String("descripteur NCM enregistre: ") + (usbNet.enableInterface() ? "oui" : "NON"));
 
-  // Ordre impose : les descripteurs doivent tous etre enregistres avant
-  // USB.begin(). Le constructeur d'USBMIDI a deja pose le sien.
-  //
-  // On continue meme si NCM est refuse : USB.begin() fera alors enumerer un
-  // peripherique MIDI seul. Un device diagnosticable vaut mieux qu'un device
-  // muet — sans CDC ni WiFi, "rien n'enumere" est indiscernable d'un cable
-  // charge-only.
-  const bool ncmRegistered = usbNcmEnableInterface();
-  logLine(ncmRegistered ? "descripteur NCM enregistre"
-                        : "ERREUR: descripteur NCM refuse — on continue en MIDI seul");
-
+#if !ARDUINO_USB_CDC_ON_BOOT
+  // Sans CDC au boot, USB.begin() nous revient : on peut encore nommer le
+  // peripherique et annoncer le composite IAD. Avec cdc_on_boot=1 le core l'a
+  // deja fait, ces reglages seraient sans effet.
   USB.productName("NiDMI");
   USB.manufacturerName("NiDMI");
-  // Composite avec IAD : sans cette triplette, Windows refuse de lier les
-  // interfaces NCM. Sans effet visible sur macOS et Linux.
   USB.usbClass(TUSB_CLASS_MISC);
   USB.usbSubClass(MISC_SUBCLASS_COMMON);
   USB.usbProtocol(MISC_PROTOCOL_IAD);
   USB.begin();
-  logLine("USB.begin() ok");
+  logLine("USB.begin() appele par le sketch");
+#else
+  logLine("USB deja demarre par le core (cdc_on_boot=1)");
+#endif
 
-  if (!ncmRegistered) {
-    logLine("NCM indisponible : le peripherique doit tout de meme apparaitre en MIDI.");
-    return;
-  }
-
-  UsbNcmConfig cfg;
-  cfg.ifDescription = "NiDMI USB Network";
-  cfg.ip = "192.168.7.1";
-  cfg.netmask = "255.255.255.0";
-  if (!usbNcmBegin(cfg)) {
-    logLine("ERREUR: usbNcmBegin() a echoue");
-    return;
-  }
-  logLine(String("netif usb up, ip 192.168.7.1, mac dev ") + usbNcmDeviceMac());
-  logLine(String("mac annoncee a l'hote: ") + usbNcmHostMac());
-
-  // Etape 3 : mDNS. Un netif a if_key custom n'est pas gere automatiquement
-  // par le composant mdns — sans ces deux appels le serveur repond en IP mais
-  // nidmi-usb.local ne resout pas.
+  // mDNS avant UsbNetService::begin() : le service se charge ensuite de
+  // l'activer sur le lien, au bon moment.
   if (mdns_init() == ESP_OK) {
     mdns_hostname_set(kHostname);
-    mdns_instance_name_set("NiDMI USB spike");
+    mdns_instance_name_set("NiDMI USB");
     mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
-    // Pas de mdns_register_netif() : les trois slots du composant sont pris
-    // par les interfaces predefinies (voir UsbNcmNet.cpp). Le netif porte la
-    // cle ETH_DEF, donc mdns le connait deja. Reste a l'activer — et seulement
-    // a la montee du lien : emis dans setup(), ENABLE_IP4 ne prend pas, le
-    // netif n'etant ni monte ni joignable tant que l'hote n'a pas active
-    // l'interface de donnees NCM.
-    mdnsRegistered = (usbNcmNetif() != nullptr);
-    logLine(mdnsRegistered ? "mdns: netif ETH_DEF pret (activation a la montee du lien)"
-                           : "ERREUR: pas de netif pour mdns");
+    logLine("mdns initialise");
   } else {
     logLine("ERREUR: mdns_init a echoue");
+  }
+
+  nidmi_core::UsbNetConfig cfg;
+  cfg.interfaceName = "NiDMI USB Network";
+  cfg.ip = "192.168.7.1";
+  if (!usbNet.begin(cfg)) {
+    logLine(String("ERREUR: UsbNetService::begin() a echoue, step=") + String((int)usbNet.lastStep()));
+  } else {
+    logLine(String("netif up, ip ") + usbNet.localIp().toString() + ", mac dev " + usbNet.deviceMac());
   }
 
   server.on("/", handleRoot);
@@ -178,73 +144,44 @@ void setup() {
   server.on("/midi", handleMidi);
   server.begin();
   logLine("http: en ecoute sur :80");
-  logLine("attendu: http://192.168.7.1/ et http://nidmi-usb.local/");
 }
 
 void loop() {
-  usbNcmUpdate();
+  usbNet.update();
   server.handleClient();
 
   static bool lastLink = false;
-  const bool link = usbNcmIsLinkUp();
+  const bool link = usbNet.isLinkUp();
   if (link != lastLink) {
     lastLink = link;
     logLine(link ? "lien USB monte" : "lien USB tombe");
-
-    if (mdnsRegistered) {
-      if (link) {
-        // Activation seulement maintenant : le netif est monte et adresse.
-        mdns_netif_action(usbNcmNetif(),
-                          (mdns_event_actions_t)(MDNS_EVENT_ENABLE_IP4 | MDNS_EVENT_ANNOUNCE_IP4));
-        mdnsAnnounced = true;
-        logLine("mdns: IPv4 active et annonce sur le lien USB");
-      } else {
-        mdns_netif_action(usbNcmNetif(), MDNS_EVENT_DISABLE_IP4);
-        mdnsAnnounced = false;
-      }
-    }
   }
 
-  // L'hote peut n'avoir sa pile mDNS prete qu'apres le bail DHCP : on
-  // re-annonce quelques fois plutot que de compter sur un unique paquet.
-  static uint32_t lastAnnounce = 0;
-  static uint8_t announceLeft = 5;
-  if (mdnsAnnounced && announceLeft > 0 && millis() - lastAnnounce > 3000) {
-    lastAnnounce = millis();
-    announceLeft--;
-    mdns_netif_action(usbNcmNetif(), MDNS_EVENT_ANNOUNCE_IP4);
-  }
-
-  // Telemetrie par USB-MIDI, canal 16. Sans CDC ni WiFi c'est le seul canal
-  // sortant : la LED ne code qu'un chiffre, le MIDI porte tout l'etat.
-  //   CC 20 = UsbNcmStep atteint par usbNcmBegin()
-  //   CC 21 = lien USB monte
-  //   CC 22 = octet haut / CC 23 = octet bas des trames RX
-  //   CC 24 = trames rejetees   CC 25 = trames TX
+  // Telemetrie par USB-MIDI, canal 16 — le seul canal sortant quand le
+  // firmware est compile sans CDC.
+  //   CC 20 = UsbNetStep   CC 21 = lien   CC 22/23 = trames RX (7 bits)
+  //   CC 24 = rejetees     CC 25 = TX
   static uint32_t lastReport = 0;
   if (millis() - lastReport > 1000) {
     lastReport = millis();
-    const UsbNcmStats stats = usbNcmStats();
-    usbMidi.controlChange(20, (uint8_t)usbNcmLastStep(), 16);
-    usbMidi.controlChange(21, usbNcmIsLinkUp() ? 1 : 0, 16);
+    const nidmi_core::UsbNetStats stats = usbNet.stats();
+    usbMidi.controlChange(20, (uint8_t)usbNet.lastStep(), 16);
+    usbMidi.controlChange(21, link ? 1 : 0, 16);
     usbMidi.controlChange(22, (uint8_t)((stats.rxFrames >> 7) & 0x7F), 16);
     usbMidi.controlChange(23, (uint8_t)(stats.rxFrames & 0x7F), 16);
     usbMidi.controlChange(24, (uint8_t)(stats.rxDropped & 0x7F), 16);
     usbMidi.controlChange(25, (uint8_t)(stats.txFrames & 0x7F), 16);
-    usbMidi.controlChange(26, (uint8_t)((mdnsRegistered ? 1 : 0) | (mdnsAnnounced ? 2 : 0)), 16);
   }
 
-  // Meme information en clignotement, au cas ou le MIDI serait lui aussi
-  // muet : n impulsions courtes, n = UsbNcmStep, puis une pause longue.
+  // Meme information en clignotement, si le MIDI est muet lui aussi.
   static uint32_t ledAt = 0;
   static uint8_t ledPhase = 0;
-  const uint8_t pulses = (uint8_t)usbNcmLastStep() * 2;  // aller-retour par impulsion
+  const uint8_t pulses = (uint8_t)usbNet.lastStep() * 2;
   if (millis() - ledAt > (ledPhase > pulses ? 900u : 150u)) {
     ledAt = millis();
     if (ledPhase > pulses) {
       ledPhase = 0;
     }
-    // LED du XIAO S3 : active a l'etat bas.
     digitalWrite(LED_BUILTIN, (ledPhase % 2 == 0) ? LOW : HIGH);
     ledPhase++;
   }
@@ -257,7 +194,7 @@ void loop() {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("Ce spike demande un ESP32-S3 compile en usb_mode=0 (USB-OTG).");
+  Serial.println("Ce banc demande un ESP32-S3 compile en usb_mode=0 (USB-OTG).");
 }
 
 void loop() {

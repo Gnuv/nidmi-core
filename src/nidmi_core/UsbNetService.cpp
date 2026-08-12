@@ -90,18 +90,33 @@ extern "C" uint16_t nidmi_usbnet_load_descriptor(uint8_t* dst, uint8_t* itf) {
   uint8_t strIndex = tinyusb_add_string_descriptor(s_ifName);
   uint8_t macIndex = tinyusb_add_string_descriptor(s_hostMacStr);
 
-  // Allocation SEPAREE des deux bulk, jamais via
-  // tinyusb_get_free_duplex_endpoint() : le duplex impose le meme index en
-  // entree et en sortie, ce qui ne passe plus des que CDC est actif (il
-  // reserve OUT3/IN4/IN5). Separement on obtient IN3/OUT2 et le compte tombe
-  // juste : MIDI IN1/OUT1, NCM notif IN2, NCM data IN3/OUT2, CDC OUT3/IN4/IN5
-  // = 4 FIFO IN reels, la limite exacte du S3.
+  // L'ORDRE COMPTE. On alloue d'abord la paire de donnees en duplex, la
+  // notification ensuite.
+  //
+  // Mesure : avec la notification en premier, elle prend IN2, et le duplex ne
+  // trouve plus d'index libre des deux cotes des que CDC est actif (il reserve
+  // OUT3/IN4/IN5). On retombe alors sur des bulk desapparies (IN3/OUT2), et
+  // macOS refuse d'activer l'alternate setting 1 : interface presente,
+  // `status: inactive`, zero trame, alors que le peripherique annonce
+  // pourtant son lien.
+  //
+  // En prenant le duplex d'abord, l'index 2 est libre des deux cotes dans les
+  // deux configurations :
+  //   sans CDC : MIDI IN1/OUT1, NCM data IN2/OUT2, NCM notif IN3
+  //   avec CDC : idem + CDC OUT3/IN4/IN5, soit 5 IN dont 4 FIFO reels
+  uint8_t epData = tinyusb_get_free_duplex_endpoint();
+  uint8_t epIn = epData;
+  uint8_t epOut = epData;
+  if (epData == 0) {
+    // Repli si un jour la configuration ne laisse plus d'index duplex libre.
+    // Non valide cote hote : voir la mesure ci-dessus.
+    epIn = tinyusb_get_free_in_endpoint();
+    epOut = tinyusb_get_free_out_endpoint();
+  }
+  TU_VERIFY(epIn != 0 && epOut != 0);
+
   uint8_t epNotif = tinyusb_get_free_in_endpoint();
   TU_VERIFY(epNotif != 0);
-  uint8_t epIn = tinyusb_get_free_in_endpoint();
-  TU_VERIFY(epIn != 0);
-  uint8_t epOut = tinyusb_get_free_out_endpoint();
-  TU_VERIFY(epOut != 0);
 
   uint8_t descriptor[TUD_CDC_NCM_DESC_LEN] = {
     TUD_CDC_NCM_DESCRIPTOR(*itf, strIndex, macIndex, (uint8_t)(0x80 | epNotif), 64, epOut,
@@ -240,11 +255,18 @@ extern "C" void tud_network_init_cb(void) {
 
 namespace nidmi_core {
 
+UsbNetService::UsbNetService() {
+  enableInterface();
+}
+
 bool UsbNetService::enableInterface() {
   if (s_interfaceEnabled) {
     return true;
   }
-  deriveMacs();
+  // Pas de deriveMacs() ici : appele depuis un constructeur global, on serait
+  // en initialisation statique. Les MAC sont derivees paresseusement, dans le
+  // callback de descripteur (execute a USB.begin()) et dans les accesseurs.
+  //
   // USB_INTERFACE_CUSTOM : seul slot du core Arduino pour une classe qu'il
   // n'expose pas lui-meme.
   if (tinyusb_enable_interface(USB_INTERFACE_CUSTOM, TUD_CDC_NCM_DESC_LEN, nidmi_usbnet_load_descriptor) !=
@@ -469,6 +491,7 @@ esp_netif_t* UsbNetService::netif() const {
 
 namespace nidmi_core {
 
+UsbNetService::UsbNetService() {}
 bool UsbNetService::enableInterface() {
   return false;
 }
