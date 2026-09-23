@@ -6,6 +6,7 @@
 
 #include "class/net/net_device.h"
 #include "esp32-hal-tinyusb.h"
+#include "device/usbd_pvt.h"   // usbd_defer_func : executer DANS la tache USB
 
 #include <esp_event.h>
 #include <esp_mac.h>
@@ -45,9 +46,8 @@ nidmi_core::UsbNetStats s_stats;
 
 // --- Chemin RX ------------------------------------------------------------
 // tud_network_recv_cb s'execute dans la task usbd. On copie la trame, on la
-// pousse dans une queue, et une task dediee la remet a lwIP puis renouvelle.
-// Renouveler dans le callback ferait recurser recv_renew -> recv_cb autant de
-// fois qu'il y a de datagrammes dans le NTB NCM courant.
+// pousse dans une queue, et une task dediee la remet a lwIP — puis DEMANDE a
+// la task usbd de renouveler (voir « TOUT APPEL AU PILOTE… » plus bas).
 struct RxFrame {
   void* buf;
   uint16_t len;
@@ -61,6 +61,45 @@ SemaphoreHandle_t s_txMutex = nullptr;
 SemaphoreHandle_t s_txDone = nullptr;
 
 constexpr TickType_t kTxWaitTicks = pdMS_TO_TICKS(100);
+
+/* ── TOUT APPEL AU PILOTE NCM S'EXECUTE DANS LA TACHE USB ─────────────────
+ * Le lien mourait en silence — sous charge (MESURES §140), puis a vide des la
+ * montee (§143) : compteurs figes, aucun rejet, les deux bouts le disant monte.
+ *
+ * La cause, lue dans ncm_device.c (TinyUSB 0.20.x, et identique en 0.21.0) :
+ * tud_network_recv_renew() est une boucle gardee contre la RE-ENTREE par deux
+ * simples booleens, `_active` et `_process_again` — un garde ecrit pour qu'une
+ * fonction se rappelle elle-meme DANS LE MEME FIL (TinyUSB #2711). Ici, deux
+ * taches l'appelaient : la tache usbd, a chaque NTB recu (netd_xfer_cb), et la
+ * tache RX, apres chaque trame. Un booleen n'est pas un verrou. Scenario qui
+ * gele tout : la tache RX est dans la boucle (`_active` vrai) ; un NTB arrive,
+ * la tache usbd le range, appelle renew, voit `_active` et REND LA MAIN SANS
+ * RELANCER DE RECEPTION, en comptant sur l'autre ; or l'autre a deja relu
+ * `_process_again` et sort. Plus personne ne relance la reception. Jamais.
+ *
+ * Meme famille cote emission (tud_network_can_xmit/xmit, appeles depuis la
+ * tache lwIP, pendant que la tache usbd libere les NTB envoyes) et cote
+ * annonce de lien (appelee depuis la boucle Arduino).
+ *
+ * Le pilote suppose UN SEUL FIL. On le lui rend : usbd_defer_func() fait
+ * executer la fonction dans la tache usbd, a la suite de ses propres
+ * evenements. Le garde a booleens redevient ce pour quoi il a ete ecrit. */
+void renewInUsbd(void*) { tud_network_recv_renew(); }
+
+void linkStateInUsbd(void* haut) { tud_network_link_state(0, haut != nullptr); }
+
+// L'emission reste SYNCHRONE pour lwIP : la tache reseau depose la trame dans
+// s_txBuf, demande a la tache usbd de l'emettre, et attend sa reponse.
+volatile uint16_t s_txLen = 0;
+volatile bool s_txOk = false;
+void xmitInUsbd(void*) {
+  s_txOk = false;
+  if (tud_network_can_xmit(s_txLen)) {
+    tud_network_xmit(s_txBuf, s_txLen);   // xmit_cb recopie s_txBuf, ici meme
+    s_txOk = true;
+  }
+  xSemaphoreGive(s_txDone);
+}
 
 void deriveMacs() {
   if (s_devMacStr[0]) {
@@ -126,21 +165,21 @@ esp_err_t usbnetTransmit(void* h, void* buffer, size_t len) {
   }
 
   esp_err_t result = ESP_ERR_TIMEOUT;
+  memcpy(s_txBuf, buffer, len);
+  s_txLen = (uint16_t)len;
   const TickType_t deadline = xTaskGetTickCount() + kTxWaitTicks;
-  while (xTaskGetTickCount() < deadline) {
-    if (tud_network_can_xmit((uint16_t)len)) {
-      memcpy(s_txBuf, buffer, len);
-      xSemaphoreTake(s_txDone, 0);  // purge un eventuel reliquat
-      tud_network_xmit(s_txBuf, (uint16_t)len);
-      // xmit_cb peut etre synchrone ou differe selon la version de TinyUSB :
-      // on attend la recopie dans les deux cas plutot que de parier.
-      if (xSemaphoreTake(s_txDone, kTxWaitTicks) == pdTRUE) {
-        result = ESP_OK;
-      }
+  do {
+    xSemaphoreTake(s_txDone, 0);                  // purge un eventuel reliquat
+    usbd_defer_func(xmitInUsbd, nullptr, false);  // dans la tache usbd
+    if (xSemaphoreTake(s_txDone, kTxWaitTicks) != pdTRUE) {
+      break;                                      // la tache usbd n'a pas repondu
+    }
+    if (s_txOk) {
+      result = ESP_OK;
       break;
     }
-    vTaskDelay(1);
-  }
+    vTaskDelay(1);   // tous les NTB d'emission pleins : laisser partir un transfert
+  } while (xTaskGetTickCount() < deadline);
 
   if (result == ESP_OK) {
     s_stats.txFrames++;
@@ -187,7 +226,7 @@ void rxTask(void* arg) {
         s_stats.rxFrames++;
       }
     }
-    tud_network_recv_renew();
+    usbd_defer_func(renewInUsbd, nullptr, false);   // PAS d'ici : dans la tache usbd
   }
 }
 
@@ -196,11 +235,17 @@ void rxTask(void* arg) {
 // --- Callbacks TinyUSB (surchargent les weak du core) ----------------------
 
 /**
- * Contrat NCM, verifie dans ncm_device.c : la valeur de retour est IGNOREE
- * (contrairement a ECM/RNDIS qui represente la trame si on rend false), et
- * tud_network_recv_renew() rappelle directement tud_network_recv_cb() pour le
- * datagramme suivant du NTB. Donc exactement un renew par appel, y compris
- * quand on jette la trame : en oublier un fige le RX definitivement.
+ * Contrat NCM. ⚠ Ce commentaire affirmait que la valeur de retour etait
+ * IGNOREE : c'etait vrai d'une ancienne version de ncm_device.c. Dans celle que
+ * compile le core Arduino (TinyUSB 0.20.1), elle est LUE : `true` fait avancer
+ * le pilote au datagramme suivant, `false` le lui fait garder. On rend `true` :
+ * la trame est copiee, ou jetee et comptee.
+ *
+ * Ce callback s'execute TOUJOURS dans la tache usbd : il n'est appele que par
+ * tud_network_recv_renew(), et celui-ci ne l'est plus que depuis la tache usbd
+ * (netd_xfer_cb, ou renewInUsbd via usbd_defer_func). L'appel a renew ci-dessous
+ * est donc une re-entree DANS LE MEME FIL — celle que le garde du pilote sait
+ * traiter.
  */
 extern "C" bool tud_network_recv_cb(const uint8_t* src, uint16_t size) {
   RxFrame frame = {nullptr, 0};
@@ -228,10 +273,8 @@ extern "C" bool tud_network_recv_cb(const uint8_t* src, uint16_t size) {
 }
 
 extern "C" uint16_t tud_network_xmit_cb(uint8_t* dst, void* ref, uint16_t arg) {
+  // Appele par tud_network_xmit(), dans xmitInUsbd : c'est lui qui signale.
   memcpy(dst, ref, arg);
-  if (s_txDone != nullptr) {
-    xSemaphoreGive(s_txDone);
-  }
   return arg;
 }
 
@@ -376,7 +419,7 @@ void UsbNetService::update() {
   const bool mounted = tud_mounted();
   if (mounted != s_linkUp) {
     s_linkUp = mounted;
-    tud_network_link_state(0, mounted);
+    usbd_defer_func(linkStateInUsbd, mounted ? (void*)1 : nullptr, false);
 
     if (s_started && s_netif != nullptr) {
       if (mounted) {
@@ -410,7 +453,9 @@ void UsbNetService::update() {
   const uint32_t now = millis();
   if (s_linkUp && now - s_lastLinkAssert > 1000) {
     s_lastLinkAssert = now;
-    tud_network_link_state(0, true);
+    // En TinyUSB 0.20.x, sans effet si l'etat n'a pas change (le pilote rend la
+    // main aussitot). Garde pour les versions ou l'annonce pouvait se perdre.
+    usbd_defer_func(linkStateInUsbd, (void*)1, false);
   }
 
   // Meme raison cote mDNS : la pile de l'hote peut n'etre prete qu'apres le
