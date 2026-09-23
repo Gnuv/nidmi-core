@@ -127,6 +127,21 @@ public:
    */
   String diagJson() const;
 
+  /**
+   * Vrai si l'hote a un bail de notre serveur DHCP (retrouve par sa MAC, celle
+   * qu'on lui annonce) : c'est l'adresse que sonderHote() interroge.
+   */
+  bool hoteConnu() const;
+
+  /**
+   * Sonde l'hote : une requete ARP vers l'adresse louee. Un hote vivant repond
+   * toujours a l'ARP — pare-feu furtif compris — et sa reponse compte dans
+   * stats().rxFrames. C'est une preuve de vie qu'on PROVOQUE au lieu de
+   * l'attendre : au repos, un Mac se tait jusqu'a une minute (MESURES §148).
+   * Faux si rien n'est parti : service arrete, lien bas, aucun bail.
+   */
+  bool sonderHote();
+
   /** Adresse de l'ESP32 sur le lien, 0.0.0.0 si le service n'est pas demarre. */
   IPAddress localIp() const;
   /** Adresse de diffusion du lien, ex. "192.168.7.255". Vide si non demarre. */

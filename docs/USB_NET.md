@@ -171,6 +171,21 @@ l'interface de donnees (alt 1 → 0 → 1), la seconde activation n'emet aucune
 notification : l'etat des notifications reste « fait ». Corrige en 0.21.0 (il
 est remis a VITESSE sur alt 0). En attendant : rebrancher.
 
+## Preuve de vie : `sonderHote()`
+
+`isLinkUp()` dit que l'USB est configure, pas que le lien vit : il a ete vu
+vrai sur un lien mort. La preuve de vie, ce sont des trames recues
+(`stats().rxFrames` qui bouge). Mais au repos un Mac se tait jusqu'a une minute
+sur ce lien (22 trames en 5 min, ecarts de 50 a 61 s) : attendre qu'il parle
+rend la preuve lente, ou fausse.
+
+`sonderHote()` la provoque : une requete ARP vers l'adresse que notre serveur
+DHCP a louee a l'hote, retrouvee par la MAC qu'on lui annonce. Un hote vivant
+repond toujours a l'ARP — pare-feu furtif compris — et sa reponse fait bouger
+`rxFrames`. `hoteConnu()` dit s'il y a un bail, donc quelqu'un a sonder. C'est
+ce que la bascule « cable prioritaire » du firmware NiDMI utilise pour couper
+le WiFi quand le cable vit, et le rallumer des qu'il se tait.
+
 ## Une annonce qui doit etre repetee
 
 **Activation mDNS.** Emise depuis `begin()`, elle ne prend pas : le composant

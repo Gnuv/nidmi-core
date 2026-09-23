@@ -14,6 +14,9 @@
 #include <esp_netif.h>
 #include <esp_netif_defaults.h>
 #include <esp_timer.h>
+#include <esp_netif_net_stack.h>   // esp_netif_get_netif_impl : le netif lwIP, pour l'ARP
+#include <lwip/etharp.h>
+#include <lwip/tcpip.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -601,6 +604,46 @@ UsbNetStats UsbNetService::stats() const {
   return s_stats;
 }
 
+namespace {
+ip4_addr_t s_cibleSonde;   // ecrite avant de poster, lue dans la tache lwIP
+
+bool bailHote(esp_ip4_addr_t* ip) {
+  if (!s_started || s_netif == nullptr) {
+    return false;
+  }
+  esp_netif_pair_mac_ip_t paire = {};
+  memcpy(paire.mac, s_hostMac, sizeof(paire.mac));
+  if (esp_netif_dhcps_get_clients_by_mac(s_netif, 1, &paire) != ESP_OK || paire.ip.addr == 0) {
+    return false;
+  }
+  if (ip != nullptr) {
+    *ip = paire.ip;
+  }
+  return true;
+}
+
+// etharp_request() n'est pas reentrant : il s'execute dans la tache lwIP.
+void sonderDansLwip(void*) {
+  struct netif* n = (struct netif*)esp_netif_get_netif_impl(s_netif);
+  if (n != nullptr) {
+    etharp_request(n, &s_cibleSonde);
+  }
+}
+}  // namespace
+
+bool UsbNetService::hoteConnu() const {
+  return bailHote(nullptr);
+}
+
+bool UsbNetService::sonderHote() {
+  esp_ip4_addr_t ip = {};
+  if (!s_linkUp || !bailHote(&ip)) {
+    return false;
+  }
+  s_cibleSonde.addr = ip.addr;
+  return tcpip_try_callback(sonderDansLwip, nullptr) == ERR_OK;
+}
+
 IPAddress UsbNetService::localIp() const {
   if (s_netif == nullptr) {
     return IPAddress((uint32_t)0);
@@ -776,6 +819,12 @@ UsbNetStep UsbNetService::lastStep() const {
 }
 UsbNetStats UsbNetService::stats() const {
   return UsbNetStats();
+}
+bool UsbNetService::hoteConnu() const {
+  return false;
+}
+bool UsbNetService::sonderHote() {
+  return false;
 }
 IPAddress UsbNetService::localIp() const {
   return IPAddress((uint32_t)0);
