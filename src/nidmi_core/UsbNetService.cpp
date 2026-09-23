@@ -7,11 +7,13 @@
 #include "class/net/net_device.h"
 #include "esp32-hal-tinyusb.h"
 #include "device/usbd_pvt.h"   // usbd_defer_func : executer DANS la tache USB
+#include "device/dcd.h"        // DCD_EVENT_COUNT : types d'evenements, pour le releve
 
 #include <esp_event.h>
 #include <esp_mac.h>
 #include <esp_netif.h>
 #include <esp_netif_defaults.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -37,7 +39,6 @@ bool s_started = false;
 bool s_linkUp = false;
 bool s_manageMdns = true;
 bool s_mdnsAnnounced = false;
-uint32_t s_lastLinkAssert = 0;
 uint32_t s_lastAnnounce = 0;
 uint8_t s_announcesLeft = 0;
 
@@ -62,6 +63,100 @@ SemaphoreHandle_t s_txDone = nullptr;
 
 constexpr TickType_t kTxWaitTicks = pdMS_TO_TICKS(100);
 
+/* ── RELEVE : LA FILE D'EVENEMENTS DE TINYUSB ─────────────────────────────
+ * Tout passe par une file de 16 evenements (CFG_TUD_TASK_QUEUE_SZ, fige dans
+ * la lib precompilee) : fins de transfert deposees par l'interruption, ET nos
+ * appels differes. Les deux n'y entrent pas de la meme facon (osal_freertos.h) :
+ * depuis une tache, le depot ATTEND une place ; depuis l'interruption, il
+ * ECHOUE en silence si la file est pleine — et une fin de transfert perdue
+ * laisse le pilote croire un transfert en cours, pour toujours.
+ * `_usbd_qdef` est global dans usbd.c (OSAL_QUEUE_DEF) et la file est creee
+ * statiquement dans son `sq` : son adresse EST la poignee de la file. */
+extern "C" osal_queue_def_t _usbd_qdef;
+volatile uint32_t s_evt[DCD_EVENT_COUNT] = {0};   // deposes avec succes, par type
+volatile uint32_t s_evtIsr = 0;                   // dont depuis l'interruption
+volatile uint16_t s_queueMax = 0;                 // remplissage maximal vu
+
+volatile uint32_t s_deferPosted = 0;
+volatile uint32_t s_deferSlow = 0;                // depots ayant attendu > 1 ms
+volatile uint32_t s_deferMaxUs = 0;
+
+void defer(osal_task_func_t func, void* param) {
+  const int64_t t0 = esp_timer_get_time();
+  usbd_defer_func(func, param, false);
+  const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+  s_deferPosted++;
+  if (dt > 1000) {
+    s_deferSlow++;
+  }
+  if (dt > s_deferMaxUs) {
+    s_deferMaxUs = dt;
+  }
+}
+
+/* ── LA TACHE USB, EPINGLEE AU COEUR DE L'INTERRUPTION ────────────────────
+ * Le pilote du controleur (dcd_dwc2.c, TinyUSB 0.20, mode esclave) ecrit la
+ * FIFO d'emission depuis DEUX fils : la tache qui lance un transfert
+ * (dcd_edpt_xfer -> edpt_schedule_packets -> epin_write_tx_fifo) et
+ * l'interruption (handle_epin_slave). La tache se protege par une section
+ * critique — qui ne masque l'interruption QUE sur son propre coeur ; et
+ * l'interruption, elle, ne prend aucun verrou pour les points d'acces.
+ * Or la tache usbd d'Arduino est creee SANS coeur (xTaskCreate) : quand elle
+ * s'execute sur l'autre coeur que l'interruption, les deux ecrivent en meme
+ * temps. Vu deux fois : l'hote a UN datagramme de moins que la carte n'en a
+ * emis. Et le releve des registres montre le bloc en cours avec son dernier
+ * paquet « ecrit » (XFRSIZ 0) mais absent de la FIFO : l'hote le reclame, la
+ * carte repond NAK, pour toujours.
+ *
+ * Remede, eprouve (MESURES §147) : la tache usbd est REMPLACEE par une copie
+ * epinglee au coeur de l'interruption. Sa section critique masque alors bien
+ * l'interruption. Avant : lien mort a 93 puis 1 666 datagrammes ; apres :
+ * 23 483 sans une expiree, sur la meme epreuve.
+ *
+ * Ce qui reste d'un autre coeur — les ecritures MIDI des autres taches — ne
+ * lance que des transferts d'UN paquet : la tache l'ecrit en entier, la FIFO
+ * de ce point d'acces n'a pas de second ecrivain, et DIEPEMPMSK n'est pas
+ * touche. Seuls les transferts de plusieurs paquets (les NTB) exposaient la
+ * course, et ils ne partent que de la tache usbd. */
+volatile uint32_t s_coeurIsr = 0;          // masque des coeurs ou l'interruption a ete vue
+volatile uint32_t s_coeurUsbd[2] = {0, 0};  // nos appels differes executes, par coeur
+volatile int8_t s_coeurEpingle = -1;       // coeur de la tache usbd epinglee, -1 : flottante
+bool s_epinglageDemande = false;
+TaskHandle_t s_usbdEpinglee = nullptr;
+
+// Pile et TCB STATIQUES : la creation ne peut pas manquer de place, il n'y a
+// donc pas de chemin d'echec a gerer. Ce n'est PAS un gain de memoire : mesure,
+// le plus gros bloc du demarrage nu vaut 15 348 o avec cette pile comme avec une
+// pile prise sur le tas — contre 17 396 pour une tache usbd encore flottante
+// 12 s apres le demarrage. D'ou viennent ces 2 048 o : non identifie
+// (MESURES §147). L'OTA passe a 15 348.
+StackType_t s_usbdPile[4096];   // en octets sous ESP-IDF
+StaticTask_t s_usbdTcb;
+
+inline void compterCoeur() { s_coeurUsbd[xPortGetCoreID() & 1]++; }
+
+void boucleUsbd(void*) {
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   // l'ancienne tache s'est retiree
+  for (;;) {
+    tud_task();
+  }
+}
+
+// S'execute DANS la tache usbd d'Arduino, entre deux evenements : rien n'est a
+// moitie traite. Cree la remplacante, epinglee au coeur de l'interruption, lui
+// passe la main, et se supprime.
+void epinglerUsbd(void* coeur) {
+  const BaseType_t c = (BaseType_t)(intptr_t)coeur;
+  s_usbdEpinglee = xTaskCreateStaticPinnedToCore(boucleUsbd, "usbd", sizeof(s_usbdPile), nullptr,
+                                                 configMAX_PRIORITIES - 1, s_usbdPile, &s_usbdTcb, c);
+  if (s_usbdEpinglee == nullptr) {
+    return;   // impossible avec des tampons fournis ; on garde la tache flottante
+  }
+  s_coeurEpingle = (int8_t)c;
+  xTaskNotifyGive(s_usbdEpinglee);
+  vTaskDelete(nullptr);
+}
+
 /* ── TOUT APPEL AU PILOTE NCM S'EXECUTE DANS LA TACHE USB ─────────────────
  * Le lien mourait en silence — sous charge (MESURES §140), puis a vide des la
  * montee (§143) : compteurs figes, aucun rejet, les deux bouts le disant monte.
@@ -78,21 +173,22 @@ constexpr TickType_t kTxWaitTicks = pdMS_TO_TICKS(100);
  * `_process_again` et sort. Plus personne ne relance la reception. Jamais.
  *
  * Meme famille cote emission (tud_network_can_xmit/xmit, appeles depuis la
- * tache lwIP, pendant que la tache usbd libere les NTB envoyes) et cote
- * annonce de lien (appelee depuis la boucle Arduino).
+ * tache lwIP, pendant que la tache usbd libere les NTB envoyes).
  *
  * Le pilote suppose UN SEUL FIL. On le lui rend : usbd_defer_func() fait
  * executer la fonction dans la tache usbd, a la suite de ses propres
  * evenements. Le garde a booleens redevient ce pour quoi il a ete ecrit. */
-void renewInUsbd(void*) { tud_network_recv_renew(); }
-
-void linkStateInUsbd(void* haut) { tud_network_link_state(0, haut != nullptr); }
+void renewInUsbd(void*) {
+  compterCoeur();
+  tud_network_recv_renew();
+}
 
 // L'emission reste SYNCHRONE pour lwIP : la tache reseau depose la trame dans
 // s_txBuf, demande a la tache usbd de l'emettre, et attend sa reponse.
 volatile uint16_t s_txLen = 0;
 volatile bool s_txOk = false;
 void xmitInUsbd(void*) {
+  compterCoeur();
   s_txOk = false;
   if (tud_network_can_xmit(s_txLen)) {
     tud_network_xmit(s_txBuf, s_txLen);   // xmit_cb recopie s_txBuf, ici meme
@@ -170,7 +266,7 @@ esp_err_t usbnetTransmit(void* h, void* buffer, size_t len) {
   const TickType_t deadline = xTaskGetTickCount() + kTxWaitTicks;
   do {
     xSemaphoreTake(s_txDone, 0);                  // purge un eventuel reliquat
-    usbd_defer_func(xmitInUsbd, nullptr, false);  // dans la tache usbd
+    defer(xmitInUsbd, nullptr);                   // dans la tache usbd
     if (xSemaphoreTake(s_txDone, kTxWaitTicks) != pdTRUE) {
       break;                                      // la tache usbd n'a pas repondu
     }
@@ -226,7 +322,7 @@ void rxTask(void* arg) {
         s_stats.rxFrames++;
       }
     }
-    usbd_defer_func(renewInUsbd, nullptr, false);   // PAS d'ici : dans la tache usbd
+    defer(renewInUsbd, nullptr);   // PAS d'ici : dans la tache usbd
   }
 }
 
@@ -278,8 +374,25 @@ extern "C" uint16_t tud_network_xmit_cb(uint8_t* dst, void* ref, uint16_t arg) {
   return arg;
 }
 
-extern "C" void tud_network_init_cb(void) {
-  s_linkUp = false;
+/** Appele par TinyUSB apres chaque depot REUSSI dans sa file (surcharge le weak
+ *  de usbd.c). Depuis l'interruption aussi : rien d'autre que compter. */
+extern "C" void tud_event_hook_cb(uint8_t rhport, uint32_t eventid, bool in_isr) {
+  (void)rhport;
+  if (eventid < DCD_EVENT_COUNT) {
+    s_evt[eventid]++;
+  }
+  QueueHandle_t q = (QueueHandle_t)&_usbd_qdef.sq;
+  UBaseType_t n;
+  if (in_isr) {
+    s_evtIsr++;
+    s_coeurIsr |= 1u << xPortGetCoreID();
+    n = uxQueueMessagesWaitingFromISR(q);
+  } else {
+    n = uxQueueMessagesWaiting(q);
+  }
+  if (n > s_queueMax) {
+    s_queueMax = (uint16_t)n;
+  }
 }
 
 namespace nidmi_core {
@@ -416,10 +529,20 @@ void UsbNetService::update() {
     return;
   }
 
+  /* L'ETAT DU LIEN NCM APPARTIENT AU PILOTE — on n'y touche pas.
+   * netd_init() le remet a « monte » a CHAQUE reset du bus (lu dans la lib
+   * compilee : `s8i 1` a l'octet 53 de ncm_interface), et le pilote l'annonce
+   * de lui-meme quand l'hote active l'interface de donnees (alt 1) : VITESSE,
+   * puis CONNECTE. Nous annoncions « coupe » au demontage : execute APRES le
+   * reset du bus, cela ecrasait le « monte » du pilote, et si l'hote activait
+   * l'interface avant notre « monte », il recevait CONNECTE = 0, repassait en
+   * alt 0 — ou la 0.20 refuse toute annonce — et ne revenait jamais : en10
+   * `inactive`, lien de l'hote 1, vitesse 0 (MESURES §147). Nos re-annonces
+   * periodiques, elles, ne faisaient rien : le pilote rend la main quand
+   * l'etat ne change pas. */
   const bool mounted = tud_mounted();
   if (mounted != s_linkUp) {
     s_linkUp = mounted;
-    usbd_defer_func(linkStateInUsbd, mounted ? (void*)1 : nullptr, false);
 
     if (s_started && s_netif != nullptr) {
       if (mounted) {
@@ -447,15 +570,14 @@ void UsbNetService::update() {
     }
   }
 
-  // Certains hotes n'activent l'interface de donnees qu'apres avoir recu la
-  // notification NETWORK_CONNECTION. Emise une seule fois, elle se perd si
-  // l'hote n'a pas fini de se configurer, et personne ne la relance.
   const uint32_t now = millis();
-  if (s_linkUp && now - s_lastLinkAssert > 1000) {
-    s_lastLinkAssert = now;
-    // En TinyUSB 0.20.x, sans effet si l'etat n'a pas change (le pilote rend la
-    // main aussitot). Garde pour les versions ou l'annonce pouvait se perdre.
-    usbd_defer_func(linkStateInUsbd, (void*)1, false);
+
+  // Epingler la tache usbd des que le coeur de l'interruption est CONNU (vu,
+  // et unique) — aux premiers evenements de l'enumeration, bien avant le
+  // premier NTB.
+  if (!s_epinglageDemande && s_coeurIsr != 0 && (s_coeurIsr & (s_coeurIsr - 1)) == 0) {
+    s_epinglageDemande = true;
+    defer(epinglerUsbd, (void*)(intptr_t)(s_coeurIsr == 1u ? 0 : 1));
   }
 
   // Meme raison cote mDNS : la pile de l'hote peut n'etre prete qu'apres le
@@ -516,6 +638,122 @@ esp_netif_t* UsbNetService::netif() const {
   return s_netif;
 }
 
+/* Registres du controleur USB (Synopsys DWC2) de l'ESP32-S3, en LECTURE seule.
+ * Base et decalages : portable/synopsys/dwc2/dwc2_esp32.h et dwc2_type.h. On
+ * n'y lit ni GRXSTSP (lire la file de reception la DEPILE) ni les FIFO. */
+namespace {
+constexpr uintptr_t kDwc2Base = 0x60080000UL;
+inline uint32_t dwc2(uint32_t off) {
+  return *(volatile uint32_t*)(kDwc2Base + off);
+}
+void hex(String& j, const char* cle, uint32_t v, bool virgule = true) {
+  char b[32];
+  snprintf(b, sizeof(b), "\"%s\":\"%08lx\"", cle, (unsigned long)v);
+  if (virgule) {
+    j += ',';
+  }
+  j += b;
+}
+void ep(String& j, uint8_t addr) {
+  j += "{\"busy\":";
+  j += usbd_edpt_busy(0, addr) ? "true" : "false";
+  j += ",\"stall\":";
+  j += usbd_edpt_stalled(0, addr) ? "true" : "false";
+  j += '}';
+}
+}  // namespace
+
+String UsbNetService::diagJson() const {
+  QueueHandle_t q = (QueueHandle_t)&_usbd_qdef.sq;
+  String j = "{\"file\":{\"taille\":" + String(_usbd_qdef.depth);
+  j += ",\"maintenant\":" + String((unsigned)uxQueueMessagesWaiting(q));
+  j += ",\"max\":" + String((unsigned)s_queueMax);
+  j += ",\"par_type\":[";
+  for (int i = 0; i < DCD_EVENT_COUNT; ++i) {
+    if (i) {
+      j += ',';
+    }
+    j += String((unsigned long)s_evt[i]);
+  }
+  j += "],\"depuis_interruption\":" + String((unsigned long)s_evtIsr) + "}";
+  j += ",\"depots\":{\"n\":" + String((unsigned long)s_deferPosted);
+  j += ",\"lents\":" + String((unsigned long)s_deferSlow);
+  j += ",\"max_us\":" + String((unsigned long)s_deferMaxUs) + "}";
+  j += ",\"coeurs\":{\"interruption\":" + String((unsigned long)s_coeurIsr);
+  j += ",\"usbd\":[" + String((unsigned long)s_coeurUsbd[0]) + "," + String((unsigned long)s_coeurUsbd[1]) + "]";
+  j += ",\"epingle\":" + String((int)s_coeurEpingle) + "}";
+  j += ",\"monte\":";
+  j += tud_mounted() ? "true" : "false";
+  j += ",\"suspendu\":";
+  j += tud_suspended() ? "true" : "false";
+  j += ",\"ep83\":";
+  ep(j, 0x83);
+  j += ",\"ep03\":";
+  ep(j, 0x03);
+  j += ",\"ep82\":";
+  ep(j, 0x82);
+  j += ",\"reg\":{";
+  hex(j, "gintsts", dwc2(0x014), false);
+  hex(j, "gintmsk", dwc2(0x018));
+  hex(j, "grxfsiz", dwc2(0x024));
+  hex(j, "gnptxfsiz", dwc2(0x028));
+  hex(j, "gnptxsts", dwc2(0x02C));
+  hex(j, "dctl", dwc2(0x804));
+  hex(j, "dsts", dwc2(0x808));
+  hex(j, "diepmsk", dwc2(0x810));
+  hex(j, "doepmsk", dwc2(0x814));
+  hex(j, "daint", dwc2(0x818));
+  hex(j, "daintmsk", dwc2(0x81C));
+  hex(j, "diepempmsk", dwc2(0x834));
+  // Par point d'acces IN n : [ctl, int, tsiz, txfsts, taille de sa FIFO]
+  j += ",\"in\":[";
+  for (uint32_t n = 0; n < 5; ++n) {
+    const uint32_t b = 0x900 + 0x20 * n;
+    char l[80];
+    snprintf(l, sizeof(l), "%s[\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\"]", n ? "," : "",
+             (unsigned long)dwc2(b), (unsigned long)dwc2(b + 0x08), (unsigned long)dwc2(b + 0x10),
+             (unsigned long)dwc2(b + 0x18), (unsigned long)(n ? dwc2(0x104 + 4 * (n - 1)) : dwc2(0x028)));
+    j += l;
+  }
+  // Par point d'acces OUT n : [ctl, int, tsiz]
+  j += "],\"out\":[";
+  for (uint32_t n = 0; n < 4; ++n) {
+    const uint32_t b = 0xB00 + 0x20 * n;
+    char l[48];
+    snprintf(l, sizeof(l), "%s[\"%08lx\",\"%08lx\",\"%08lx\"]", n ? "," : "", (unsigned long)dwc2(b),
+             (unsigned long)dwc2(b + 0x08), (unsigned long)dwc2(b + 0x10));
+    j += l;
+  }
+  j += "]}";
+#ifdef NIDMI_NCM_ITF_ADDR
+  // L'etat du pilote NCM (`ncm_interface`, statique dans ncm_device.c) : son
+  // adresse est lue dans l'ELF et passee au build. Le lecteur valide la zone :
+  // elle doit commencer par les points d'acces 83 03 82. Suivi du tampon
+  // d'emission en cours, s'il pointe en DRAM : ses 32 premiers octets (NTH16 +
+  // debut de NDP16 — longueur du bloc et datagrammes).
+  const uint8_t* p = (const uint8_t*)(uintptr_t)(NIDMI_NCM_ITF_ADDR);
+  auto dump = [&j](const uint8_t* a, int n) {
+    for (int i = 0; i < n; ++i) {
+      char b[3];
+      snprintf(b, sizeof(b), "%02x", a[i]);
+      j += b;
+    }
+  };
+  j += ",\"ncm\":\"";
+  dump(p, 56);
+  j += "\"";
+  uintptr_t enCours;
+  memcpy(&enCours, p + 36, sizeof(enCours));   // xmit_tinyusb_ntb
+  if (enCours >= 0x3FC88000UL && enCours + 32 <= 0x3FD00000UL) {
+    j += ",\"ntb_emission\":\"";
+    dump((const uint8_t*)enCours, 32);
+    j += "\"";
+  }
+#endif
+  j += "}";
+  return j;
+}
+
 }  // namespace nidmi_core
 
 #else  // cible sans USB-OTG (ESP32-C3) ou compilee en usb_mode=1
@@ -550,6 +788,9 @@ const char* UsbNetService::deviceMac() const {
 }
 const char* UsbNetService::hostMac() const {
   return "";
+}
+String UsbNetService::diagJson() const {
+  return String("{}");
 }
 
 }  // namespace nidmi_core

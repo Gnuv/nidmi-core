@@ -53,8 +53,9 @@ void loop() {
 }
 ```
 
-`update()` n'est pas optionnel : il porte l'annonce de lien vers l'hote et
-l'activation mDNS, qui doivent etre repetees (voir plus bas).
+`update()` n'est pas optionnel : il epingle la tache USB au coeur de
+l'interruption (voir « Deux coeurs »), et porte l'activation mDNS, qui doit
+etre repetee (voir plus bas).
 
 ## Configuration
 
@@ -121,16 +122,56 @@ prend donc la cle `ETH_DEF` pour occuper le slot ETH predefini.
 **Pas de RNDIS/ECM.** Les libs Arduino ne compilent que `ncm_device` ; il n'y a
 pas d'`ecm_rndis_device`. Aucun repli possible sans reconstruire les libs.
 
-## Deux annonces qui doivent etre repetees
+## Deux coeurs : la tache USB epinglee au coeur de l'interruption
 
-Mesure faite pendant le spike (`spike/usbnet/`), les deux se manifestent de la
-meme facon : rien ne fonctionne, et rien ne le signale.
+**Sans cela, l'emission se fige pour toujours sous charge.** Le pilote du
+controleur (`dcd_dwc2.c`, TinyUSB 0.20, mode esclave — la 0.21 ne change rien)
+ecrit la FIFO d'emission depuis deux fils : la tache qui lance un transfert
+(`dcd_edpt_xfer` → `epin_write_tx_fifo`) et l'interruption
+(`handle_epin_slave`). La tache se protege par une section critique, qui ne
+masque l'interruption que **sur son propre coeur** ; l'interruption ne prend
+aucun verrou pour les points d'acces. Or le core Arduino cree la tache `usbd`
+**sans coeur** (`xTaskCreate`) : releve, elle s'executait 69 fois sur 118 sur
+le coeur 0 quand l'interruption est sur le coeur 1.
 
-**Annonce de lien.** Emise une seule fois sur la transition de `tud_mounted()`,
-elle se perd si l'hote n'a pas fini de se configurer. L'hote laisse alors
-l'interface de donnees sur l'alternate setting 0 (`bNumEndpoints = 0`) et aucun
-trafic n'est possible. Cote macOS : `status: inactive`, aucun bail DHCP.
-`update()` la re-affirme chaque seconde.
+Symptome, releve dans les registres : le bloc en cours d'emission a son dernier
+paquet compte comme ecrit (`DIEPTSIZ` : 1 paquet, 0 octet) mais la FIFO est
+vide ; l'hote reclame (jetons IN), la carte repond NAK, indefiniment. L'hote a
+toujours UN datagramme de moins que la carte n'en a emis.
+
+Seuls les transferts de plusieurs paquets exposent la course — les NTB. Les
+ecritures MIDI (un paquet) venues d'autres taches ne l'exposent pas : la tache
+ecrit le paquet en entier, sans second ecrivain sur cette FIFO.
+
+`update()` remplace donc la tache `usbd` par une copie epinglee au coeur de
+l'interruption, des qu'il est connu (vu par `tud_event_hook_cb`). Le
+remplacement se fait DANS l'ancienne tache, entre deux evenements. Eprouve :
+lien mort a 93 puis 1 666 datagrammes avant ; 23 483 sans une expiree apres,
+sur la meme charge (six requetes paralleles, 20 s, deux passages).
+
+## L'etat du lien appartient au pilote
+
+**Ne pas appeler `tud_network_link_state()`.** `netd_init()` remet le lien a
+« monte » a chaque reset du bus, et le pilote l'annonce de lui-meme a
+l'activation de l'interface de donnees (alt 1) : VITESSE, puis CONNECTE.
+
+Annoncer « coupe » au demontage, comme le faisait cette bibliotheque, cree une
+course : execute apres le reset du bus, l'appel ecrase le « monte » du pilote ;
+si l'hote active l'interface avant l'annonce « monte » suivante, il recoit
+CONNECTE = 0 et repasse en alt 0 — ou la 0.20 refuse toute annonce. Cote
+macOS : `status: inactive`, `IOLinkStatus` 1, vitesse 0, pour toujours. Vu une
+fois sur quatre demarrages ; c'est le seul chemin par lequel le pilote emet
+CONNECTE = 0, et il rend compte de tout l'etat releve (alt 0, notifications
+« faites », lien a 1 cote carte), mais il n'a pas ete reproduit a volonte. Les
+re-annonces periodiques, elles, ne faisaient rien : le pilote rend la main
+quand l'etat ne change pas.
+
+**Limite restante de la 0.20.** Si l'hote desactive puis reactive lui-meme
+l'interface de donnees (alt 1 → 0 → 1), la seconde activation n'emet aucune
+notification : l'etat des notifications reste « fait ». Corrige en 0.21.0 (il
+est remis a VITESSE sur alt 0). En attendant : rebrancher.
+
+## Une annonce qui doit etre repetee
 
 **Activation mDNS.** Emise depuis `begin()`, elle ne prend pas : le composant
 veut un netif deja monte et adresse, ce qui n'arrive qu'a l'activation de
@@ -147,7 +188,8 @@ Sans CDC il n'y a pas de console : `lastStep()` rend l'etape atteinte par
 |---|---|
 | aucun peripherique USB | descripteur refuse — budget d'endpoints |
 | MIDI seul, pas de reseau | `enableInterface()` a echoue |
-| interface hote presente, `inactive` | annonce de lien perdue — `update()` appele ? |
+| interface hote presente, `inactive` | l'hote a recu CONNECTE = 0, ou a reactive l'interface (limite 0.20) : rebrancher |
+| trafic qui s'arrete sous charge, `txTimeouts` qui monte | tache `usbd` non epinglee — `update()` appele ? |
 | IP repond, `.local` non | mDNS : cle `ETH_DEF`, activation a la montee du lien |
 | `txTimeouts` non nul | lien non monte cote hote, ou alt 1 non selectionne |
 

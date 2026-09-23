@@ -105,14 +105,27 @@ public:
   bool begin(const UsbNetConfig& cfg = UsbNetConfig());
 
   /**
-   * A appeler dans loop(). Suit l'etat du lien, re-affirme l'annonce vers
-   * l'hote et declenche l'activation mDNS au bon moment. Non bloquant.
+   * A appeler dans loop(). Epingle la tache usbd au coeur de l'interruption
+   * USB des qu'il est connu (sans quoi l'emission peut se figer pour
+   * toujours, voir UsbNetService.cpp), suit le montage USB pour le netif et
+   * declenche l'activation mDNS au bon moment. N'annonce PAS l'etat du lien :
+   * il appartient au pilote NCM. Non bloquant.
    */
   void update();
 
   bool isLinkUp() const;
   UsbNetStep lastStep() const;
   UsbNetStats stats() const;
+
+  /**
+   * Releve de diagnostic, en JSON, LECTURE SEULE : remplissage de la file
+   * d'evenements de TinyUSB (maximum atteint, evenements deposes par type),
+   * temps passe a y deposer nos appels, etat des points d'acces NCM vu par
+   * TinyUSB, et registres du controleur USB pour chaque point d'acces.
+   * Sert a dire, quand un sens du lien se fige, si le materiel a fini son
+   * transfert (evenement perdu en route) ou s'il attend encore l'hote.
+   */
+  String diagJson() const;
 
   /** Adresse de l'ESP32 sur le lien, 0.0.0.0 si le service n'est pas demarre. */
   IPAddress localIp() const;
