@@ -166,10 +166,40 @@ CONNECTE = 0, et il rend compte de tout l'etat releve (alt 0, notifications
 re-annonces periodiques, elles, ne faisaient rien : le pilote rend la main
 quand l'etat ne change pas.
 
-**Limite restante de la 0.20.** Si l'hote desactive puis reactive lui-meme
-l'interface de donnees (alt 1 → 0 → 1), la seconde activation n'emet aucune
-notification : l'etat des notifications reste « fait ». Corrige en 0.21.0 (il
-est remis a VITESSE sur alt 0). En attendant : rebrancher.
+## Le pilote NCM, embarque en source
+
+Ce service apporte sa propre copie du pilote (`src/nidmi_core/tinyusb/ncm_device.c`) :
+TinyUSB master `2b9a77862`, le commit exact de la lib precompilee du core
+Arduino 3.3.5 (`versions.txt` du paquet `esp32-arduino-libs`). Ses symboles
+sont definis avant que l'editeur de liens ne parcoure l'archive : le membre
+precompile n'est plus extrait (verifie dans le `.map`). Changements, tous
+marques « NiDMI : » dans le source :
+
+- **NTB de 2 048 o** au lieu de 3 200 : 2 304 o de RAM interne rendus, debit
+  inchange (~13 000 datagrammes par 20 s de charge) ;
+- **reactivation par l'hote** (amont fef11cd + c06dc87) : sur alt 0, l'etat des
+  notifications revient a VITESSE ; et **aucune notification en alt 0** — sans
+  cette garde, une notification en vol au moment de la desactivation relancait
+  VITESSE puis CONNECTE en alt 0, et l'activation suivante n'annoncait rien ;
+- **validation des NTB recus** (amont 02ffd90 + 6d697c6) : le bloc NDP doit
+  tenir dans le NTB recu, et la position du premier NDP se compare a
+  `sizeof(nth16_t)` (le code comparait a la taille d'un pointeur) ;
+- **requetes de classe** que la 0.20 refusait, portees de la 0.21 :
+  SetEthernetPacketFilter, GetNtbInputSize, SetNtbInputSize (forme a 4 octets ;
+  la norme rend les deux dernieres obligatoires) ;
+- `nidmi_ncm_etat()` et `nidmi_ncm_evenements()` : l'etat du pilote et la trace
+  de ses 16 derniers evenements (activations, notifications, requetes, refus),
+  pour le releve — plus d'adresse lue dans l'ELF et passee a la compilation.
+
+**Ce que macOS fait vraiment, releve par la trace** (MESURES §153) : a
+l'enumeration, GetNtbParameters, alt 1, VITESSE, CONNECTE — le lien monte. Sur
+`ifconfig en10 down` : alt 0. Sur `ifconfig en10 up` : alt 1 puis **alt 0 une
+milliseconde plus tard**, avant meme d'avoir lu la notification VITESSE — et
+plus rien. Ce n'est pas une reaction a ce que la carte envoie : des
+notifications envoyees en alt 0 ne le ramenent pas non plus. Dans ce cas,
+seule une nouvelle enumeration (redemarrage de la carte, rebranchement) rend
+le lien. La bascule « cable prioritaire » garde la carte joignable par le WiFi
+entre-temps.
 
 ## Preuve de vie : `sonderHote()`
 
@@ -202,7 +232,7 @@ depot de l'app) :
 | | RAM interne |
 |---|---|
 | pile de la tache `usbd` epinglee (statique) + TCB | 3 072 + 352 o — elle en utilise ~1 000 |
-| tampons NTB du pilote precompile (2 × 3 200) | 6 416 o, figes dans la lib |
+| tampons NTB du pilote (2 × 2 048, notre copie) | 4 112 o (6 416 dans la lib precompilee) |
 | tampon d'emission | **aucun** : la trame est recopiee une seule fois, du tampon de lwIP dans le NTB, par la tache `usbd` pendant que la tache reseau attend |
 | trames recues | **aucune** : copiees en PSRAM jusqu'a ce que lwIP les ait lues |
 | pile de `usbnet_rx` | **aucune** : 4 096 o en PSRAM (seul le TCB reste interne) |
@@ -228,7 +258,7 @@ Sans CDC il n'y a pas de console : `lastStep()` rend l'etape atteinte par
 |---|---|
 | aucun peripherique USB | descripteur refuse — budget d'endpoints |
 | MIDI seul, pas de reseau | `enableInterface()` a echoue |
-| interface hote presente, `inactive` | l'hote a recu CONNECTE = 0, ou a reactive l'interface (limite 0.20) : rebrancher |
+| interface hote presente, `inactive` | lire la trace du pilote : alt 0 apres un `ifconfig up` (ou une reactivation) = macOS a desactive de lui-meme ; redemarrer la carte ou rebrancher |
 | trafic qui s'arrete sous charge, `txTimeouts` qui monte | tache `usbd` non epinglee — `update()` appele ? |
 | IP repond, `.local` non | mDNS : cle `ETH_DEF`, activation a la montee du lien |
 | `txTimeouts` non nul | lien non monte cote hote, ou alt 1 non selectionne |

@@ -81,6 +81,11 @@ constexpr TickType_t kTxWaitTicks = pdMS_TO_TICKS(100);
  * `_usbd_qdef` est global dans usbd.c (OSAL_QUEUE_DEF) et la file est creee
  * statiquement dans son `sq` : son adresse EST la poignee de la file. */
 extern "C" osal_queue_def_t _usbd_qdef;
+// L'etat du pilote NCM, pour le releve : notre copie du pilote l'expose
+// (tinyusb/ncm_device.c).
+extern "C" const void* nidmi_ncm_etat(size_t* taille);
+// ... et sa trace : les 16 derniers evenements (activations, notifications).
+extern "C" uint32_t nidmi_ncm_evenements(uint32_t* ms, char* quoi, uint8_t* val, uint32_t* total);
 volatile uint32_t s_evt[DCD_EVENT_COUNT] = {0};   // deposes avec succes, par type
 volatile uint32_t s_evtIsr = 0;                   // dont depuis l'interruption
 volatile uint16_t s_queueMax = 0;                 // remplissage maximal vu
@@ -815,13 +820,13 @@ String UsbNetService::diagJson() const {
     j += l;
   }
   j += "]}";
-#ifdef NIDMI_NCM_ITF_ADDR
-  // L'etat du pilote NCM (`ncm_interface`, statique dans ncm_device.c) : son
-  // adresse est lue dans l'ELF et passee au build. Le lecteur valide la zone :
-  // elle doit commencer par les points d'acces 83 03 82. Suivi du tampon
+  // L'etat du pilote NCM (`ncm_interface`), expose par notre copie du pilote
+  // (tinyusb/ncm_device.c, nidmi_ncm_etat). Le lecteur valide la zone : elle
+  // doit commencer par les points d'acces 83 03 82. Suivi du tampon
   // d'emission en cours, s'il pointe en DRAM : ses 32 premiers octets (NTH16 +
   // debut de NDP16 — longueur du bloc et datagrammes).
-  const uint8_t* p = (const uint8_t*)(uintptr_t)(NIDMI_NCM_ITF_ADDR);
+  size_t taille = 0;
+  const uint8_t* p = (const uint8_t*)nidmi_ncm_etat(&taille);
   auto dump = [&j](const uint8_t* a, int n) {
     for (int i = 0; i < n; ++i) {
       char b[3];
@@ -830,7 +835,7 @@ String UsbNetService::diagJson() const {
     }
   };
   j += ",\"ncm\":\"";
-  dump(p, 56);
+  dump(p, (int)taille);
   j += "\"";
   uintptr_t enCours;
   memcpy(&enCours, p + 36, sizeof(enCours));   // xmit_tinyusb_ntb
@@ -839,7 +844,18 @@ String UsbNetService::diagJson() const {
     dump((const uint8_t*)enCours, 32);
     j += "\"";
   }
-#endif
+  // La trace du pilote : [ms, quoi, valeur], du plus ancien au plus recent.
+  uint32_t evMs[16];
+  char evQuoi[16];
+  uint8_t evVal[16];
+  uint32_t evTotal = 0;
+  const uint32_t nEv = nidmi_ncm_evenements(evMs, evQuoi, evVal, &evTotal);
+  j += ",\"ncm_evts_total\":" + String((unsigned long)evTotal) + ",\"ncm_evts\":[";
+  for (uint32_t i = 0; i < nEv; ++i) {
+    if (i) j += ',';
+    j += "[" + String((unsigned long)evMs[i]) + ",\"" + String(evQuoi[i]) + "\"," + String((unsigned)evVal[i]) + "]";
+  }
+  j += "],\"maintenant_ms\":" + String((unsigned long)xTaskGetTickCount());
   j += "}";
   return j;
 }
