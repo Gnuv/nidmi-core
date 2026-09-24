@@ -51,6 +51,14 @@ struct UsbNetConfig {
    * L'application doit avoir initialise mDNS avant (MDNS.begin / mdns_init).
    */
   bool manageMdns = true;
+
+  /**
+   * Coeur et priorite de la tache qui remet les trames recues a lwIP
+   * (usbnet_rx). -1 : aucun coeur impose. La repartition des coeurs entre
+   * l'audio, le MIDI, les capteurs et le reseau se MESURE (MESURES §149).
+   */
+  int rxCore = -1;
+  unsigned rxPriority = 12;
 };
 
 /** Etapes de begin(), pour diagnostiquer sans console serie. */

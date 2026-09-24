@@ -513,7 +513,8 @@ bool UsbNetService::begin(const UsbNetConfig& cfg) {
   }
 
   s_lastStep = UsbNetStep::RxTask;
-  if (xTaskCreate(rxTask, "usbnet_rx", 4096, nullptr, 12, &s_rxTask) != pdPASS) {
+  const BaseType_t coeurRx = (cfg.rxCore == 0 || cfg.rxCore == 1) ? (BaseType_t)cfg.rxCore : tskNO_AFFINITY;
+  if (xTaskCreatePinnedToCore(rxTask, "usbnet_rx", 4096, nullptr, cfg.rxPriority, &s_rxTask, coeurRx) != pdPASS) {
     return false;
   }
 
