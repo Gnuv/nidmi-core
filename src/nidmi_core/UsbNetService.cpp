@@ -4,6 +4,8 @@
 
 #include <string.h>
 
+#include <atomic>
+
 #include "class/net/net_device.h"
 #include "esp32-hal-tinyusb.h"
 #include "device/usbd_pvt.h"   // usbd_defer_func : executer DANS la tache USB
@@ -14,6 +16,7 @@
 #include <esp_netif.h>
 #include <esp_netif_defaults.h>
 #include <esp_timer.h>
+#include <esp_heap_caps.h>   // les trames recues et la pile de usbnet_rx vont en PSRAM
 #include <esp_netif_net_stack.h>   // esp_netif_get_netif_impl : le netif lwIP, pour l'ARP
 #include <lwip/etharp.h>
 #include <lwip/tcpip.h>
@@ -21,6 +24,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <freertos/idf_additions.h>   // xTaskCreatePinnedToCoreWithCaps
 #include <mdns.h>
 
 namespace {
@@ -60,7 +64,8 @@ QueueHandle_t s_rxQueue = nullptr;
 TaskHandle_t s_rxTask = nullptr;
 
 // --- Chemin TX ------------------------------------------------------------
-uint8_t s_txBuf[CFG_TUD_NET_MTU];
+// Pas de tampon a nous : la tache usbd lit la trame DANS le tampon de lwIP,
+// pendant que la tache reseau l'attend (voir usbnetTransmit).
 SemaphoreHandle_t s_txMutex = nullptr;
 SemaphoreHandle_t s_txDone = nullptr;
 
@@ -128,12 +133,12 @@ bool s_epinglageDemande = false;
 TaskHandle_t s_usbdEpinglee = nullptr;
 
 // Pile et TCB STATIQUES : la creation ne peut pas manquer de place, il n'y a
-// donc pas de chemin d'echec a gerer. Ce n'est PAS un gain de memoire : mesure,
-// le plus gros bloc du demarrage nu vaut 15 348 o avec cette pile comme avec une
-// pile prise sur le tas — contre 17 396 pour une tache usbd encore flottante
-// 12 s apres le demarrage. D'ou viennent ces 2 048 o : non identifie
-// (MESURES §147). L'OTA passe a 15 348.
-StackType_t s_usbdPile[4096];   // en octets sous ESP-IDF
+// donc pas de chemin d'echec a gerer. En RAM interne, pas en PSRAM : c'est la
+// tache la plus prioritaire du coeur de l'audio, elle ne doit pas attendre la
+// PSRAM a chaque commutation. 3 072 o : elle en utilise 1 016 au plus, releve
+// apres le demarrage (enumeration comprise) puis sous la charge du §82 par le
+// cable (MESURES §150) ; les 4 096 d'Arduino laissaient 3 080 o jamais touches.
+StackType_t s_usbdPile[3072];   // en octets sous ESP-IDF
 StaticTask_t s_usbdTcb;
 
 inline void compterCoeur() { s_coeurUsbd[xPortGetCoreID() & 1]++; }
@@ -186,17 +191,37 @@ void renewInUsbd(void*) {
   tud_network_recv_renew();
 }
 
-// L'emission reste SYNCHRONE pour lwIP : la tache reseau depose la trame dans
-// s_txBuf, demande a la tache usbd de l'emettre, et attend sa reponse.
-volatile uint16_t s_txLen = 0;
+/* L'emission reste SYNCHRONE pour lwIP : la tache reseau demande a la tache
+ * usbd d'emettre la trame, et attend sa reponse. La trame n'est plus recopiee
+ * dans un tampon a nous (1 514 o de RAM interne, et une copie par trame) :
+ * tud_network_xmit la recopie une seule fois, directement du tampon de lwIP
+ * dans le NTB.
+ *
+ * Ce tampon n'appartient a lwIP que le temps de usbnetTransmit. D'ou un
+ * contrat, porte par s_txEtat : la tache usbd ne touche au tampon qu'apres
+ * avoir fait passer la demande de DEMANDE a EN_COURS ; l'emetteur qui renonce
+ * (tache usbd muette 100 ms) fait passer DEMANDE a ANNULE — si c'est trop
+ * tard (EN_COURS : la copie est commencee), il attend qu'elle finisse, ce qui
+ * est borne. Un appel differe reste dans la file apres une annulation : il
+ * trouvera ANNULE (et ne lira rien) ou la demande SUIVANTE (et la servira). */
+enum : uint32_t { TX_LIBRE, TX_DEMANDE, TX_EN_COURS, TX_FINI, TX_ANNULE };
+std::atomic<uint32_t> s_txEtat{TX_LIBRE};
+const void* s_txSrc = nullptr;   // publies avant TX_DEMANDE, lus apres EN_COURS
+uint16_t s_txLen = 0;
 volatile bool s_txOk = false;
 void xmitInUsbd(void*) {
   compterCoeur();
-  s_txOk = false;
-  if (tud_network_can_xmit(s_txLen)) {
-    tud_network_xmit(s_txBuf, s_txLen);   // xmit_cb recopie s_txBuf, ici meme
-    s_txOk = true;
+  uint32_t attendu = TX_DEMANDE;
+  if (!s_txEtat.compare_exchange_strong(attendu, TX_EN_COURS)) {
+    return;   // annulee, ou deja servie par un appel precedent : rien a lire
   }
+  bool ok = false;
+  if (tud_network_can_xmit(s_txLen)) {
+    tud_network_xmit(const_cast<void*>(s_txSrc), s_txLen);   // xmit_cb recopie la trame, ici meme
+    ok = true;
+  }
+  s_txOk = ok;
+  s_txEtat.store(TX_FINI);
   xSemaphoreGive(s_txDone);
 }
 
@@ -255,7 +280,7 @@ extern "C" uint16_t nidmi_usbnet_load_descriptor(uint8_t* dst, uint8_t* itf) {
 
 esp_err_t usbnetTransmit(void* h, void* buffer, size_t len) {
   (void)h;
-  if (!s_linkUp || len == 0 || len > sizeof(s_txBuf)) {
+  if (!s_linkUp || len == 0 || len > CFG_TUD_NET_MTU) {
     return ESP_ERR_INVALID_STATE;
   }
   if (xSemaphoreTake(s_txMutex, kTxWaitTicks) != pdTRUE) {
@@ -264,14 +289,24 @@ esp_err_t usbnetTransmit(void* h, void* buffer, size_t len) {
   }
 
   esp_err_t result = ESP_ERR_TIMEOUT;
-  memcpy(s_txBuf, buffer, len);
+  s_txSrc = buffer;
   s_txLen = (uint16_t)len;
   const TickType_t deadline = xTaskGetTickCount() + kTxWaitTicks;
   do {
     xSemaphoreTake(s_txDone, 0);                  // purge un eventuel reliquat
+    s_txEtat.store(TX_DEMANDE);
     defer(xmitInUsbd, nullptr);                   // dans la tache usbd
     if (xSemaphoreTake(s_txDone, kTxWaitTicks) != pdTRUE) {
-      break;                                      // la tache usbd n'a pas repondu
+      // La tache usbd n'a pas repondu. Pas commencee : on annule, elle ne
+      // lira jamais ce tampon. Commencee : une copie bornee, on l'attend.
+      uint32_t attendu = TX_DEMANDE;
+      if (!s_txEtat.compare_exchange_strong(attendu, TX_ANNULE)) {
+        xSemaphoreTake(s_txDone, portMAX_DELAY);
+        if (s_txOk) {
+          result = ESP_OK;
+        }
+      }
+      break;
     }
     if (s_txOk) {
       result = ESP_OK;
@@ -350,7 +385,12 @@ extern "C" bool tud_network_recv_cb(const uint8_t* src, uint16_t size) {
   RxFrame frame = {nullptr, 0};
 
   if (size > 0 && s_rxQueue != nullptr) {
-    void* buf = malloc(size);
+    // En PSRAM : une trame reste allouee jusqu'a ce que lwIP (et le serveur
+    // web, pour une requete) l'ait lue ; en RAM interne, ces allocations de
+    // toutes tailles se glissaient entre les blocs du tas du plus gros bloc.
+    // lwIP range deja les siennes en PSRAM (CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP).
+    // free() les rend, d'ou qu'elles viennent.
+    void* buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (buf != nullptr) {
       memcpy(buf, src, size);
       frame.buf = buf;
@@ -514,7 +554,13 @@ bool UsbNetService::begin(const UsbNetConfig& cfg) {
 
   s_lastStep = UsbNetStep::RxTask;
   const BaseType_t coeurRx = (cfg.rxCore == 0 || cfg.rxCore == 1) ? (BaseType_t)cfg.rxCore : tskNO_AFFINITY;
-  if (xTaskCreatePinnedToCore(rxTask, "usbnet_rx", 4096, nullptr, cfg.rxPriority, &s_rxTask, coeurRx) != pdPASS) {
+  // Pile en PSRAM : 4 096 o de RAM interne rendus. La tache ne fait que passer
+  // les trames a lwIP (1 196 o de pile au plus, MESURES §150), sous le MIDI et
+  // les capteurs ; elle n'ecrit jamais la flash (seule contrainte d'une pile en
+  // PSRAM : ne pas tourner cache coupe). Jamais supprimee — sinon ce serait par
+  // vTaskDeleteWithCaps.
+  if (xTaskCreatePinnedToCoreWithCaps(rxTask, "usbnet_rx", 4096, nullptr, cfg.rxPriority, &s_rxTask, coeurRx,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     return false;
   }
 

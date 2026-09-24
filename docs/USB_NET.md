@@ -193,6 +193,31 @@ veut un netif deja monte et adresse, ce qui n'arrive qu'a l'activation de
 l'interface de donnees par l'hote. `update()` la declenche a la montee du lien,
 puis re-annonce quelques fois.
 
+## Memoire
+
+Sur un ESP32-S3 le chiffre qui decide est le plus gros bloc contigu de RAM
+interne. Ce que le lien y prend, et ce qu'il n'y prend plus (MESURES §150 du
+depot de l'app) :
+
+| | RAM interne |
+|---|---|
+| pile de la tache `usbd` epinglee (statique) + TCB | 3 072 + 352 o — elle en utilise ~1 000 |
+| tampons NTB du pilote precompile (2 × 3 200) | 6 416 o, figes dans la lib |
+| tampon d'emission | **aucun** : la trame est recopiee une seule fois, du tampon de lwIP dans le NTB, par la tache `usbd` pendant que la tache reseau attend |
+| trames recues | **aucune** : copiees en PSRAM jusqu'a ce que lwIP les ait lues |
+| pile de `usbnet_rx` | **aucune** : 4 096 o en PSRAM (seul le TCB reste interne) |
+
+La tache `usbd` garde sa pile en RAM interne : c'est la plus prioritaire du
+coeur de l'audio, elle ne doit pas attendre la PSRAM a chaque commutation.
+
+**Le cout le plus lourd n'est pas ici.** La lib TinyUSB precompilee du core
+Arduino lie toutes ses classes (MSC, DFU, pile hote, CDC, video...) avec leurs
+tampons statiques, ~12,6 ko, sans qu'aucune interface ne les annonce.
+L'application les ecarte par des pilotes vides en symboles faibles (firmware :
+`src/network/UsbClassesAbsentes.c`) ; les vrais pilotes reviennent d'eux-memes
+quand une classe sert — le vrai NCM reste lie, puisque ce service appelle
+`tud_network_xmit`.
+
 ## Diagnostic
 
 Sans CDC il n'y a pas de console : `lastStep()` rend l'etape atteinte par
