@@ -86,6 +86,7 @@ extern "C" osal_queue_def_t _usbd_qdef;
 extern "C" const void* nidmi_ncm_etat(size_t* taille);
 // ... et sa trace : les 16 derniers evenements (activations, notifications).
 extern "C" uint32_t nidmi_ncm_evenements(uint32_t* ms, char* quoi, uint8_t* val, uint32_t* total);
+extern "C" bool nidmi_ncm_reseau_actif(void);
 volatile uint32_t s_evt[DCD_EVENT_COUNT] = {0};   // deposes avec succes, par type
 volatile uint32_t s_evtIsr = 0;                   // dont depuis l'interruption
 volatile uint16_t s_queueMax = 0;                 // remplissage maximal vu
@@ -147,6 +148,18 @@ StackType_t s_usbdPile[3072];   // en octets sous ESP-IDF
 StaticTask_t s_usbdTcb;
 
 inline void compterCoeur() { s_coeurUsbd[xPortGetCoreID() & 1]++; }
+
+/* ── LA RELANCE DE L'ENUMERATION ──────────────────────────────────────────
+ * Deconnexion logicielle (le controleur retire sa resistance de tirage : l'hote
+ * voit un depart), puis reconnexion par update() apres kRelanceMs : l'hote voit
+ * une arrivee, remet le bus a zero et enumere de nouveau — MIDI compris. Les
+ * deux appels passent par la tache usbd, comme tout appel au pilote. */
+constexpr uint32_t kRelanceMs = 500;
+volatile bool s_relanceEnCours = false;
+uint32_t s_relanceDebut = 0;
+uint32_t s_relances = 0;
+void deconnecterDansUsbd(void*) { tud_disconnect(); }
+void connecterDansUsbd(void*) { tud_connect(); }
 
 void boucleUsbd(void*) {
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   // l'ancienne tache s'est retiree
@@ -584,6 +597,11 @@ void UsbNetService::update() {
     return;
   }
 
+  if (s_relanceEnCours && millis() - s_relanceDebut >= kRelanceMs) {
+    s_relanceEnCours = false;
+    defer(connecterDansUsbd, nullptr);
+  }
+
   /* L'ETAT DU LIEN NCM APPARTIENT AU PILOTE — on n'y touche pas.
    * netd_init() le remet a « monte » a CHAQUE reset du bus (lu dans la lib
    * compilee : `s8i 1` a l'octet 53 de ncm_interface), et le pilote l'annonce
@@ -685,6 +703,29 @@ void sonderDansLwip(void*) {
 
 bool UsbNetService::hoteConnu() const {
   return bailHote(nullptr);
+}
+
+bool UsbNetService::relancerEnumeration() {
+  if (!s_interfaceEnabled || s_relanceEnCours) {
+    return false;
+  }
+  s_relanceDebut = millis();
+  s_relanceEnCours = true;
+  s_relances++;
+  defer(deconnecterDansUsbd, nullptr);
+  return true;
+}
+
+bool UsbNetService::relanceEnCours() const {
+  return s_relanceEnCours;
+}
+
+uint32_t UsbNetService::relances() const {
+  return s_relances;
+}
+
+bool UsbNetService::reseauActif() const {
+  return s_interfaceEnabled && nidmi_ncm_reseau_actif();
 }
 
 bool UsbNetService::sonderHote() {
@@ -887,6 +928,18 @@ bool UsbNetService::hoteConnu() const {
   return false;
 }
 bool UsbNetService::sonderHote() {
+  return false;
+}
+bool UsbNetService::relancerEnumeration() {
+  return false;
+}
+bool UsbNetService::relanceEnCours() const {
+  return false;
+}
+uint32_t UsbNetService::relances() const {
+  return 0;
+}
+bool UsbNetService::reseauActif() const {
   return false;
 }
 IPAddress UsbNetService::localIp() const {

@@ -1130,6 +1130,13 @@ const void* nidmi_ncm_etat(size_t* taille) {
   return &ncm_interface;
 }
 
+// NiDMI : l'hote utilise-t-il le reseau du cable ? (interface de donnees en
+// alt 1). Faux alors que le bus est monte = l'hote a laisse l'interface
+// desactivee — le cas que « Relancer le cable » resout (MESURES §154).
+bool nidmi_ncm_reseau_actif(void) {
+  return ncm_interface.itf_data_alt == 1;
+}
+
 // NiDMI : la trace (point 5), du plus ancien au plus recent. Rend le nombre
 // d'evenements copies (16 au plus) ; `total` : combien depuis le demarrage.
 uint32_t nidmi_ncm_evenements(uint32_t* ms, char* quoi, uint8_t* val, uint32_t* total) {

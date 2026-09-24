@@ -150,6 +150,24 @@ public:
    */
   bool sonderHote();
 
+  /**
+   * Refait l'enumeration USB : deconnexion logicielle, puis reconnexion 500 ms
+   * plus tard (par update()). Pour quand l'hote laisse l'interface de donnees
+   * en alt 0 sans jamais la reactiver — macOS le fait quand il releve lui-meme
+   * l'interface (MESURES §153) : seule une nouvelle enumeration rend le lien.
+   * Coupe AUSSI le MIDI USB le temps de la relance (une a deux secondes) : un
+   * geste manuel, jamais automatique. Faux si une relance est deja en cours ou
+   * si l'interface n'est pas enregistree.
+   */
+  bool relancerEnumeration();
+  /** Une relance est en cours : deconnecte, reconnexion a venir. */
+  bool relanceEnCours() const;
+  /** Relances faites depuis le demarrage. */
+  uint32_t relances() const;
+  /** L'hote utilise le reseau du cable (interface de donnees en alt 1). Faux
+   *  avec le bus monte : il l'a laissee desactivee — relancerEnumeration(). */
+  bool reseauActif() const;
+
   /** Adresse de l'ESP32 sur le lien, 0.0.0.0 si le service n'est pas demarre. */
   IPAddress localIp() const;
   /** Adresse de diffusion du lien, ex. "192.168.7.255". Vide si non demarre. */

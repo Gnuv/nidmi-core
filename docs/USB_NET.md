@@ -197,9 +197,16 @@ l'enumeration, GetNtbParameters, alt 1, VITESSE, CONNECTE — le lien monte. Sur
 milliseconde plus tard**, avant meme d'avoir lu la notification VITESSE — et
 plus rien. Ce n'est pas une reaction a ce que la carte envoie : des
 notifications envoyees en alt 0 ne le ramenent pas non plus. Dans ce cas,
-seule une nouvelle enumeration (redemarrage de la carte, rebranchement) rend
-le lien. La bascule « cable prioritaire » garde la carte joignable par le WiFi
-entre-temps.
+seule une nouvelle enumeration rend le lien.
+
+**`relancerEnumeration()` la fait sans debrancher** : deconnexion logicielle
+(depuis la tache usbd), reconnexion 500 ms plus tard (par `update()`). Mesure :
+le cable revient en ~3 s, lien et MIDI compris. Elle coupe AUSSI le MIDI USB
+le temps de la relance — un geste manuel, jamais automatique (le firmware NiDMI
+l'expose dans Reglages → Carte → Reseau, « Relancer le cable »).
+`reseauActif()` dit si l'hote utilise le reseau du cable (interface de donnees
+en alt 1) : faux avec le bus monte, c'est le cas de la relance. La bascule
+« cable prioritaire » garde la carte joignable par le WiFi entre-temps.
 
 ## Preuve de vie : `sonderHote()`
 
@@ -258,7 +265,7 @@ Sans CDC il n'y a pas de console : `lastStep()` rend l'etape atteinte par
 |---|---|
 | aucun peripherique USB | descripteur refuse — budget d'endpoints |
 | MIDI seul, pas de reseau | `enableInterface()` a echoue |
-| interface hote presente, `inactive` | lire la trace du pilote : alt 0 apres un `ifconfig up` (ou une reactivation) = macOS a desactive de lui-meme ; redemarrer la carte ou rebrancher |
+| interface hote presente, `inactive` | `reseauActif()` faux, trace du pilote en alt 0 : macOS a desactive de lui-meme ; `relancerEnumeration()` |
 | trafic qui s'arrete sous charge, `txTimeouts` qui monte | tache `usbd` non epinglee — `update()` appele ? |
 | IP repond, `.local` non | mDNS : cle `ETH_DEF`, activation a la montee du lien |
 | `txTimeouts` non nul | lien non monte cote hote, ou alt 1 non selectionne |
