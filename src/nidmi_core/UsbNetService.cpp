@@ -289,6 +289,22 @@ extern "C" uint16_t nidmi_usbnet_load_descriptor(uint8_t* dst, uint8_t* itf) {
     TUD_CDC_NCM_DESCRIPTOR(*itf, strIndex, macIndex, (uint8_t)(0x80 | epNotif), 64, epData,
                            (uint8_t)(0x80 | epData), CFG_TUD_ENDOINT_SIZE, CFG_TUD_NET_MTU)
   };
+  /* L'HOTE LIT NOS ANNONCES CHAQUE MILLISECONDE, pas toutes les 50 (MESURES
+   * §162). La macro de TinyUSB fige l'intervalle du point de notification a
+   * 50 trames — 32 ms chez macOS. Or l'hote active l'interface (alt 1) et la
+   * carte met aussitot VITESSE en file : jusqu'a sa lecture, le lien n'est
+   * pas annonce. Si macOS « remonte » l'interface dans cette fenetre, il la
+   * desactive (alt 0) et n'y revient jamais : cable `inactive` — 3
+   * redemarrages sur 30, mesure. Trace : l'alt 0 tombe de 3 a 22 ms apres
+   * l'alt 1, toujours AVANT la lecture de CONNECTE ; lue la premiere, le lien
+   * vit. CONNECTE etait lue a +36..+63 ms (deux lectures) ; a 1 ms, a
+   * +2..+10 : 0 perte sur 30. Les NAK de l'hote ne coutent rien a la carte :
+   * le controleur y repond seul, sans interruption. */
+  for (size_t i = 0; i + 7 <= sizeof(descriptor) && descriptor[i]; i += descriptor[i]) {
+    if (descriptor[i + 1] == TUSB_DESC_ENDPOINT && descriptor[i + 3] == TUSB_XFER_INTERRUPT) {
+      descriptor[i + 6] = 1;
+    }
+  }
   *itf += 2;  // interface de controle + interface de donnees
   memcpy(dst, descriptor, TUD_CDC_NCM_DESC_LEN);
   return TUD_CDC_NCM_DESC_LEN;
