@@ -87,6 +87,7 @@ extern "C" const void* nidmi_ncm_etat(size_t* taille);
 // ... et sa trace : les 16 derniers evenements (activations, notifications).
 extern "C" uint32_t nidmi_ncm_evenements(uint32_t* ms, char* quoi, uint8_t* val, uint32_t* total);
 extern "C" bool nidmi_ncm_reseau_actif(void);
+extern "C" int nidmi_ncm_resume(char* buf, size_t n);
 volatile uint32_t s_evt[DCD_EVENT_COUNT] = {0};   // deposes avec succes, par type
 volatile uint32_t s_evtIsr = 0;                   // dont depuis l'interruption
 volatile uint16_t s_queueMax = 0;                 // remplissage maximal vu
@@ -815,6 +816,27 @@ void ep(String& j, uint8_t addr) {
 }
 }  // namespace
 
+/* LE LIEN MORT EN DEUX LIGNES (MESURES §163) — chacune tient dans une ligne
+ * de console, donc dans le journal d'avant. Les compteurs du service, la
+ * file d'evenements de TinyUSB (pleine, un evenement de l'interruption se
+ * perd sans bruit), les depots differes lents ; puis le chemin de donnees du
+ * pilote. */
+String UsbNetService::resumeLien() const {
+  char l[160];
+  snprintf(l, sizeof(l), "rx %lu (jetees %lu) tx %lu (expirees %lu) | file max %u/%u | differes lents %lu, pire %lu us",
+           (unsigned long)s_stats.rxFrames, (unsigned long)s_stats.rxDropped,
+           (unsigned long)s_stats.txFrames, (unsigned long)s_stats.txTimeouts,
+           (unsigned)s_queueMax, (unsigned)_usbd_qdef.depth,
+           (unsigned long)s_deferSlow, (unsigned long)s_deferMaxUs);
+  return String(l);
+}
+
+String UsbNetService::resumePilote() const {
+  char l[200];
+  nidmi_ncm_resume(l, sizeof(l));
+  return String(l);
+}
+
 String UsbNetService::diagJson() const {
   QueueHandle_t q = (QueueHandle_t)&_usbd_qdef.sq;
   String j = "{\"file\":{\"taille\":" + String(_usbd_qdef.depth);
@@ -972,6 +994,12 @@ const char* UsbNetService::hostMac() const {
 }
 String UsbNetService::diagJson() const {
   return String("{}");
+}
+String UsbNetService::resumeLien() const {
+  return String();
+}
+String UsbNetService::resumePilote() const {
+  return String();
 }
 
 }  // namespace nidmi_core

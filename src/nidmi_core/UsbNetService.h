@@ -135,6 +135,12 @@ public:
    */
   String diagJson() const;
 
+  /** Le lien en deux lignes, pour la photo du lien mort dans la console et
+   *  le journal d'avant (MESURES §163) : les compteurs et la file
+   *  d'evenements ; le chemin de donnees du pilote NCM. */
+  String resumeLien() const;
+  String resumePilote() const;
+
   /**
    * Vrai si l'hote a un bail de notre serveur DHCP (retrouve par sa MAC, celle
    * qu'on lui annonce) : c'est l'adresse que sonderHote() interroge.

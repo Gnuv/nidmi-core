@@ -106,6 +106,7 @@
 #define CFG_TUD_NCM_OUT_NTB_MAX_SIZE 2048
 
 #include "tusb_option.h"
+#include <stdio.h>   // NiDMI : nidmi_ncm_resume
 
 #if (CFG_TUD_ENABLED && CFG_TUD_NCM)
 
@@ -1133,6 +1134,38 @@ const void* nidmi_ncm_etat(size_t* taille) {
 // NiDMI : l'hote utilise-t-il le reseau du cable ? (interface de donnees en
 // alt 1). Faux alors que le bus est monte = l'hote a laisse l'interface
 // desactivee — le cas que « Relancer le cable » resout (MESURES §154).
+/* NiDMI : le chemin de donnees en une ligne, pour la photo du lien mort
+ * (MESURES §163). Qui tient quoi : le tampon d'une reception ou d'une
+ * emission en cours cote TinyUSB (usb), cote logique (glue), les files
+ * pretes et libres, et si TinyUSB croit ses points occupes (occ). Un
+ * transfert dont l'evenement de fin s'est perdu reste « usb X / occ 1 » pour
+ * toujours. Lu hors de la tache usbd : une photo, pas une verite atomique. */
+int nidmi_ncm_resume(char* buf, size_t n) {
+  int recvPret = 0, recvLibre = 0, xmitPret = 0, xmitLibre = 0;
+  for (int i = 0; i < RECV_NTB_N; ++i) {
+    if (ncm_interface.recv_ready_ntb[i] != NULL) ++recvPret;
+    if (ncm_interface.recv_free_ntb[i] != NULL) ++recvLibre;
+  }
+  for (int i = 0; i < XMIT_NTB_N; ++i) {
+    if (ncm_interface.xmit_ready_ntb[i] != NULL) ++xmitPret;
+    if (ncm_interface.xmit_free_ntb[i] != NULL) ++xmitLibre;
+  }
+  const uint8_t r = ncm_interface.rhport;
+  const int occOut = ncm_interface.ep_out ? (int)usbd_edpt_busy(r, ncm_interface.ep_out) : -1;
+  const int occIn  = ncm_interface.ep_in ? (int)usbd_edpt_busy(r, ncm_interface.ep_in) : -1;
+  const int occNot = ncm_interface.ep_notif ? (int)usbd_edpt_busy(r, ncm_interface.ep_notif) : -1;
+  return snprintf(buf, n,
+      "alt %u lien %u notif %u%u | rx usb %c glue %c pret %d libre %d occ %d renew %u%u | "
+      "tx usb %c glue %c/%u pret %d libre %d occ %d | notif occ %d",
+      ncm_interface.itf_data_alt, ncm_interface.link_is_up,
+      (unsigned)ncm_interface.notification_xmit_state, ncm_interface.notification_xmit_is_running,
+      ncm_interface.recv_tinyusb_ntb ? 'X' : '-', ncm_interface.recv_glue_ntb ? 'X' : '-',
+      recvPret, recvLibre, occOut,
+      ncm_interface.tud_network_recv_renew_active, ncm_interface.tud_network_recv_renew_process_again,
+      ncm_interface.xmit_tinyusb_ntb ? 'X' : '-', ncm_interface.xmit_glue_ntb ? 'X' : '-',
+      ncm_interface.xmit_glue_ntb_datagram_ndx, xmitPret, xmitLibre, occIn, occNot);
+}
+
 bool nidmi_ncm_reseau_actif(void) {
   return ncm_interface.itf_data_alt == 1;
 }
