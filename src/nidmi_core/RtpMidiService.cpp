@@ -32,22 +32,23 @@ void RtpMidiService::staticControlChange(byte channel, byte cc, byte value) {
   }
 }
 
+/* Pas de trace par message : une ligne sur le port serie par note (35 o a
+ * 115 200 bauds, ~3 ms) bloquait la tache qui lisait des qu'un accord
+ * remplissait la FIFO de l'UART — sur le chemin meme du MIDI (MESURES §172 du
+ * depot nidmi). L'entree se voit a la LED d'activite de l'app. */
 void RtpMidiService::handleNoteOn_(uint8_t channel, uint8_t note, uint8_t velocity) {
-  Serial.printf("[RTP-MIDI] IN NoteOn ch=%u n=%u v=%u\n", channel, note, velocity);
   if (hookNoteOn_) {
     hookNoteOn_(channel, note, velocity);
   }
 }
 
 void RtpMidiService::handleNoteOff_(uint8_t channel, uint8_t note, uint8_t velocity) {
-  Serial.printf("[RTP-MIDI] IN NoteOff ch=%u n=%u v=%u\n", channel, note, velocity);
   if (hookNoteOff_) {
     hookNoteOff_(channel, note, velocity);
   }
 }
 
 void RtpMidiService::handleControlChange_(uint8_t channel, uint8_t cc, uint8_t value) {
-  Serial.printf("[RTP-MIDI] IN CC ch=%u cc=%u v=%u\n", channel, cc, value);
   if (hookControlChange_) {
     hookControlChange_(channel, cc, value);
   }
@@ -116,11 +117,19 @@ void RtpMidiService::stop() {
   started_ = false;
 }
 
-void RtpMidiService::update() {
+/* TOUT ce qui est arrive, pas un message : read() n'en decode qu'un, si bien
+ * qu'un accord arrive dans un seul paquet RTP s'etalait sur autant d'appels —
+ * un tour de boucle par note. Borne a 32 : un flot ne monopolise pas
+ * l'appelant. Rend le nombre de messages traites. */
+int RtpMidiService::update() {
   if (!started_) {
-    return;
+    return 0;
   }
-  NdmMidi.read();
+  int n = 0;
+  while (n < 32 && NdmMidi.read()) {
+    n++;
+  }
+  return n;
 }
 
 void RtpMidiService::sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {

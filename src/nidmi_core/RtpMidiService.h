@@ -22,7 +22,8 @@ public:
 
   bool begin(const char* sessionName, uint16_t port = 5004);
   void stop();
-  void update();
+  /** Traite tout ce qui est arrive (au plus 32 messages) ; rend leur nombre. */
+  int update();
 
   void sendNoteOn(uint8_t channel, uint8_t note, uint8_t velocity);
   void sendNoteOff(uint8_t channel, uint8_t note, uint8_t velocity);
